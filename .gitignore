@@ -1,0 +1,4 @@
+# gnore all jpg files and pyc files
+*.jpg
+*.pyc
+*.pt
