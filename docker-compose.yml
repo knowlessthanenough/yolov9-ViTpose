@@ -16,13 +16,8 @@ services:
       - QT_QPA_PLATFORM_PLUGIN_PATH=/opt/conda/lib/python3.8/site-packages/cv2/qt/plugins
       - QT_QPA_PLATFORM=xcb
     volumes:
-<<<<<<< HEAD
       - ../dataset/:/coco/  # Mount the local COCO dataset path
       - ../:/yolov9  # Mount the local code directory
-=======
-      - ./dataset/:/coco/  # Mount the local COCO dataset path
-      - ./yolov9/:/yolov9  # Mount the local code directory
->>>>>>> a8ddafd3d5ed48fde7174dc6f58b11669e3542c3
       - /tmp/.X11-unix:/tmp/.X11-unix  # Mount the X11 socket for GUI
     working_dir: /yolov9  # Set working directory inside container
     stdin_open: true  # Equivalent to `-i` to keep STDIN open
