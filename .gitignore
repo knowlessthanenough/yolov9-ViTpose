@@ -2,3 +2,5 @@
 *.jpg
 *.pyc
 *.pt
+*.mp4
+runs/*
