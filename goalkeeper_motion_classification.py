@@ -3,11 +3,11 @@ import numpy as np
 
 def classify_goalkeeper_behavior(all_frame_detections, distance_threshold=100, movement_threshold=800):
     """
-    Classifies goalkeeper behavior for two cases:
-    Case 1: If the ball's center is within the area formed by skeleton points [11, 12, 13, 14, 15, 16].
-    Case 2: If the average distance between the ball and the closest skeleton point in the last 10 frames 
-            is larger than `distance_threshold` and the goalkeeper's body center movement throughout the video 
-            is smaller than `movement_threshold`.
+    Classifies goalkeeper behavior for three cases:
+    - Class 0 : No any bellow class detected.
+    - Class 2: Ball is far from skeleton, and goalkeeper's movement is limited.
+    - Class 3: Goalkeeper's last 5-frame average center is farther from the ball than the first 5-frame average center.
+    - Class 10: Ball is within the area formed by skeleton points.
 
     Args:
         all_frame_detections (list): List of frame detections. Each entry is a list of detection dictionaries.
@@ -15,9 +15,10 @@ def classify_goalkeeper_behavior(all_frame_detections, distance_threshold=100, m
         movement_threshold (float): Maximum movement of the goalkeeper's body center for classification.
 
     Returns:
-        list: A list of integers representing the tags for the video: [1], [2], or [1, 2].
+        list: A list of integers representing the tags for the video: [1], [2], [3], or combinations.
     """
     body_centers = []  # To track the body center (average of keypoints 5, 6, 11, 12)
+    ball_centers = []  # To track the ball's center
     closest_distances = []  # To track closest distances for each frame
     tags = set()  # To store unique tags detected in the video
 
@@ -53,7 +54,7 @@ def classify_goalkeeper_behavior(all_frame_detections, distance_threshold=100, m
 
             ball_point = Point(ball_center)
             if polygon.contains(ball_point):
-                tag = 10  # Class 1 detected
+                tag = 10  # Class 10 detected
 
             # ------------------------
             # Track closest skeleton point to the ball
@@ -71,6 +72,7 @@ def classify_goalkeeper_behavior(all_frame_detections, distance_threshold=100, m
                 ]
                 body_center = np.mean(body_points, axis=0)
                 body_centers.append(body_center)
+                ball_centers.append(ball_center)
             except (IndexError, TypeError):
                 raise ValueError(f"Incomplete or invalid skeleton keypoints for body center: {goalkeeper_skeleton}")
 
@@ -87,6 +89,20 @@ def classify_goalkeeper_behavior(all_frame_detections, distance_threshold=100, m
                 movement_distance = np.linalg.norm(np.array(body_centers[0]) - np.array(body_centers[-1]))
                 if movement_distance < movement_threshold:
                     tags.add(2)
+
+    # ------------------------
+    # Case 3: Compare average center points
+    # ------------------------
+    if len(body_centers) >= 10 and len(ball_centers) >= 10:
+        avg_body_center_first_5 = np.mean(body_centers[:5], axis=0)
+        avg_body_center_last_5 = np.mean(body_centers[-5:], axis=0)
+        avg_ball_center_last_5 = np.mean(ball_centers[-5:], axis=0)
+
+        dist_last_to_body = np.linalg.norm(avg_body_center_last_5 - avg_ball_center_last_5)
+        dist_first_to_body = np.linalg.norm(avg_body_center_first_5 - avg_ball_center_last_5)
+
+        if dist_last_to_body > dist_first_to_body:
+            tags.add(3)
 
     # Final tag logic
     tags.discard(0)  # Remove 0 if any other tag is present
