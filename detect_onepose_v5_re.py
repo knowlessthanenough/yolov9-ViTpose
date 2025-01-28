@@ -148,6 +148,7 @@ def infer_on_dataset(
     perspective_matrix,
     goal_realworld_size,
     goalkeeper_clothes_colors_histogram,  # If not None, we pick best skeleton among persons
+    ball_speed,
     save_img,
     save_txt,
     save_conf,
@@ -321,7 +322,7 @@ def infer_on_dataset(
     # --------------------------------------
     if goalkeeper_clothes_colors_histogram is not None:
         print("----------------------------Classifying goalkeeper behavior----------------------------")
-        behaver = classify_goalkeeper_behavior(all_frame_detections)
+        behaver = classify_goalkeeper_behavior(all_frame_detections, ball_speed)
         print("the video is classify as behavior " , behaver)
     print("All detections size:", len(all_frame_detections))
     return seen, windows, dt
@@ -414,7 +415,7 @@ def process_single_detection(
                     clothes_colors_histogram,
                     skelton_colors_histogram
                 )
-                print(f"Color match score: {score_val}")
+                # print(f"Color match score: {score_val}")
                 detection_result['score'] = score_val
 
     return detection_result
@@ -691,6 +692,7 @@ def run(
     goal_image_coordinate=None,       # list of 4 points [[x,y], [x,y], [x,y], [x,y]]
     goal_realworld_size=None,         # output width x height
     goalkeeper_clothes_colors_histogram_path=None,    # list of LAB colors for color matching
+    ball_speed=0,                     # ball speed
 ):
     """
     Main detection + pose estimation pipeline.
@@ -746,6 +748,7 @@ def run(
         perspective_matrix,
         goal_realworld_size,
         goalkeeper_clothes_colors_histogram,
+        ball_speed,
         save_img,
         save_txt,
         save_conf,
@@ -803,6 +806,7 @@ def parse_opt():
     parser.add_argument('--goal_image_coordinate', nargs='*' ,type=int, default=None, help='four points for perspective transform')
     parser.add_argument('--goal_realworld_size', nargs='*' ,type=int, default=[2100, 700], help='output width x height')
     parser.add_argument('--goalkeeper_clothes_colors_histogram_path', type=str, default = None, help = 'numpy array of HSV colors histogram')
+    parser.add_argument('--ball-speed', type=float, default=0, help='ball speed')
     opt = parser.parse_args()
 
     # Convert flat list to nested list of coordinates

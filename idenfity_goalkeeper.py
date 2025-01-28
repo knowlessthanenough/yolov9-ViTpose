@@ -204,7 +204,7 @@ if __name__ == "__main__":
     }
 
     # Load images
-    goalkeeper_clothe_image = cv2.imread("./data/images/goalkeeper_clothes.jpeg")
+    goalkeeper_clothe_image = cv2.imread("./data/images/goalkeeper_clothes.jpg")
 
     # Extract histograms, ignoring white
     goalkeeper_hist_from_image = extract_color_histogram_with_specific_background_color(goalkeeper_clothe_image, ignore_color_range=white_range)
@@ -216,8 +216,8 @@ if __name__ == "__main__":
 
     print(f"Similarity score: {score}")
 
-    # # Plot the histogram
-    # plot_hsv_histogram(goalkeeper_hist_from_skelton, bins=(50, 60, 60))
+    # Plot the histogram
+    plot_hsv_histogram(goalkeeper_hist_from_image, bins=(50, 60, 60))
 
 
 # if __name__ == "__main__":

@@ -42,7 +42,7 @@ RUN add-apt-repository universe && apt-get update
 RUN rm -rf /opt/conda/lib/python3.8/site-packages/cv2
 
 # Reinstall OpenCV via pip
-RUN pip3 install opencv-python seaborn \
+RUN pip3 install opencv-python seaborn shapely\
     && pip3 install git+https://github.com/developer0hye/onepose.git
 
 
