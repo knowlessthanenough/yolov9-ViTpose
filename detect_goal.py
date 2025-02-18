@@ -8,6 +8,7 @@ import numpy as np
 import onepose
 from idenfity_goalkeeper import extract_color_histogram_with_specific_background_color, extract_color_histogram_from_rotated_skelton, compare_histograms, load_histogram
 from goalkeeper_motion_classification import classify_goalkeeper_behavior
+from collections import deque
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLO root directory
@@ -61,9 +62,9 @@ def prepare_perspective(goal_image_coordinate, goal_realworld_size):
             goal_realworld_size[1]
         )
         print("Perspective matrix:", perspective_matrix)
-        return perspective_matrix, True
+        return perspective_matrix
     else:
-        return None, False
+        raise TypeError("Perspective matrix is not calculated. Please provide 4 points.")
 
 
 def setup_output_dir(project, name, exist_ok, save_txt):
@@ -84,14 +85,6 @@ def load_yolo_model(weights, device, dnn, data, half):
     model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
     stride, names, pt = model.stride, model.names, model.pt
     return model, stride, names, pt
-
-
-def load_pose_model():
-    """
-    Load the OnePose model (or other pose model).
-    """
-    pose_model = onepose.create_model('ViTPose_huge_simple_coco').to("cuda")
-    return pose_model
 
 
 def create_dataloader(source, imgsz, stride, pt, vid_stride):
@@ -133,7 +126,6 @@ def warmup_yolo_model(model, pt, bs, imgsz):
 def infer_on_dataset(
     dataset,
     model,
-    pose_model,
     names,
     pt,
     imgsz,
@@ -144,11 +136,8 @@ def infer_on_dataset(
     agnostic_nms,
     augment,
     visualize,
-    have_perspective,
     perspective_matrix,
     goal_realworld_size,
-    goalkeeper_clothes_colors_histogram,  # If not None, we pick best skeleton among persons
-    ball_speed,
     save_img,
     save_txt,
     save_conf,
@@ -169,18 +158,13 @@ def infer_on_dataset(
     vid_path, vid_writer = [None] * 1, [None] * 1
     seen, windows = 0, []
     dt = (Profile(), Profile(), Profile())
-    video_detections = []  # To store detections per video
 
-    current_video_detections = []  # To store detections for the current video
-    current_video_path = None  # Track which video we are processing
+    frames_buffer = deque(maxlen=60)  # store the last 60 frames
+    skip_counter = 0                 # if > 0, skip checking “big ball” triggers
+    clip_index = 0                   # to name each saved clip uniquely
+    fps = 30                         # (optional) frames per second for each clip
     
-    for path, im, im0s, vid_cap, s in dataset:
-        # Detect video change
-        if current_video_path is None or current_video_path != path:
-            if current_video_detections:  # If there are detections for the previous video
-                video_detections.append((current_video_path, current_video_detections))
-                current_video_detections = []  # Reset for the next video
-            current_video_path = path
+    for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         # --------------------------------------
         # 1) Preprocessing & YOLO Inference
         # --------------------------------------
@@ -218,14 +202,11 @@ def infer_on_dataset(
             )
 
             # Possibly warp entire frame
-            if have_perspective:
-                im0_warped = cv2.warpPerspective(
-                    im0,
-                    perspective_matrix,
-                    (goal_realworld_size[0], goal_realworld_size[1])
-                )
-            else:
-                im0_warped = im0
+            im0_warped = cv2.warpPerspective(
+                im0,
+                perspective_matrix,
+                (goal_realworld_size[0], goal_realworld_size[1])
+            )
 
             # Rescale boxes
             if len(det):
@@ -238,54 +219,25 @@ def infer_on_dataset(
             s += '%gx%g ' % im.shape[2:]
 
             # --------------------------------------
-            # 3) Collect all detections for this frame
+            # 3) Process each detection
             # --------------------------------------
             all_detections_for_frame = []
-
-            if len(det):
-                for *xyxy, conf, cls_id in reversed(det):
-                    detection_result = process_single_detection(
-                        im0s,
-                        xyxy,
-                        conf,
-                        cls_id,
-                        have_perspective,
-                        perspective_matrix,
-                        pose_model,
-                        save_crop,
-                        hide_labels,
-                        hide_conf,
-                        names,
-                        goalkeeper_clothes_colors_histogram
-                    )
-                    if detection_result:
-                        all_detections_for_frame.append(detection_result)
-
-            # Append this frame's detections to the master list
-            current_video_detections.append(all_detections_for_frame)
+            for *xyxy, conf, cls in det:
+                det_result = process_single_detection(
+                    xyxy,
+                    conf,
+                    cls,
+                    perspective_matrix,
+                    save_crop,
+                    hide_labels,
+                    hide_conf,
+                    names
+                )
+                if det_result:
+                    all_detections_for_frame.append(det_result)
 
             # print(f"Frame {frame}: {len(all_detections_for_frame)} detections")
             # print(all_detections_for_frame)
-
-            # --------------------------------------
-            # 4) If goalkeeper_clothes_colors_histogram is set, 
-            #    keep only the best skeleton among persons
-            # --------------------------------------
-            if goalkeeper_clothes_colors_histogram is not None:
-                # find person with highest 'score'
-                best_score = -1
-                best_idx = -1
-                for idx, detres in enumerate(all_detections_for_frame):
-                    if detres['cls'] == 0 and detres['score'] > best_score:
-                        best_score = detres['score']
-                        best_idx = idx
-
-                # null out skeleton for all other persons
-                for idx, detres in enumerate(all_detections_for_frame):
-                    if detres['cls'] == 0 and idx != best_idx:
-                        detres['keypoints'] = None
-                        detres['keypoints_conf'] = None
-                        detres['score'] = 0.0
 
             # -------------
             # (A) Save detections to YOLO TXT
@@ -299,14 +251,66 @@ def infer_on_dataset(
                 )
 
             # -------------
-            # (B) Draw bounding boxes & skeletons
+            # (B) Draw bounding boxes
             # -------------
             draw_all_detections(
                 im0_warped,
                 all_detections_for_frame,
-                pose_model,
                 line_thickness
             )
+
+            # 1) Store the final annotated frame in our buffer
+            frames_buffer.append(im0_warped.copy())  # copy() so we don’t overwrite by reference
+
+            # 2) If we are skipping, just decrement skip_counter
+            if skip_counter > 0:
+                skip_counter -= 1
+            else:
+                # 3) We are not skipping => check for big ball triggers
+                #    In your code, “all_detections_for_frame” holds all det results
+                triggered = False
+                for det_result in all_detections_for_frame:
+                    if det_result['cls'] == 32:  # ball class
+                        wx1, wy1, wx2, wy2 = det_result['bbox_warp']
+                        w = wx2 - wx1
+                        h = wy2 - wy1
+                        # both > 75 => trigger
+                        if w > 75 and h > 75:
+                            triggered = True
+                            break
+
+                # 4) If triggered => save a new short clip
+                if triggered:
+                    clip_index += 1
+                    clip_name = f"clip_{clip_index}.mp4"
+                    clip_path = str(save_dir / 'clips' / clip_name)
+                    (save_dir / 'clips').mkdir(exist_ok=True)  # ensure subdir
+
+                    # Create a temporary video writer
+                    height, width = im0_warped.shape[:2]
+                    writer = cv2.VideoWriter(
+                        clip_path,
+                        cv2.VideoWriter_fourcc(*'mp4v'),
+                        fps,
+                        (width, height)
+                    )
+
+                    # (a) Write out the last 60 frames
+                    #     If we have fewer than 60, that’s okay => we write all
+                    for old_frame in frames_buffer:
+                        writer.write(old_frame)
+
+                    # (b) Since frames_buffer already appended the current frame,
+                    #     we do NOT need to write it again. The current frame is
+                    #     the last item in frames_buffer. If you prefer to add it
+                    #     again, that’s optional. Typically once is enough.
+
+                    writer.release()
+                    LOGGER.info(f"Saved new clip => {clip_path} (last 60 frames + current)")
+
+                    # 5) Set skip counter => ignore triggers for next 900 frames
+                    skip_counter = 900
+
 
             # print(im0_warped.shape)
 
@@ -327,39 +331,18 @@ def infer_on_dataset(
 
         LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
 
-    # After processing all videos, append the last video's detections
-    if current_video_detections:
-        video_detections.append((current_video_path, current_video_detections))
-
-    # --------------------------------------
-    # 5) Classify goalkeeper behavior
-    # --------------------------------------
-    behavior_dict = {}
-    if goalkeeper_clothes_colors_histogram is not None:
-        # print("----------------------------Classifying goalkeeper behavior----------------------------")
-        for video_path, video_detections in video_detections:
-            if video_detections:  # Ensure there are detections for this video
-                behavior_dict[video_path] = classify_goalkeeper_behavior(video_detections, ball_speed)
-            else:
-                behavior_dict[video_path] = "No detections"
-            # print("the video is classify as behavior " , behaviors)
-
-    return seen, windows, dt, behavior_dict
+    return seen, windows, dt
 
 
 def process_single_detection(
-    im0s,
     xyxy,
     conf,
     cls,
-    have_perspective,
     perspective_matrix,
-    pose_model,
     save_crop,
     hide_labels,
     hide_conf,
     names,
-    clothes_colors_histogram
 ):
     """
     Return detection data (incl. bounding box, skeleton, label, 'score').
@@ -389,53 +372,13 @@ def process_single_detection(
         else:
             detection_result['label_str'] = f'{names[c]} {conf:.2f}'
 
-    # Warp bounding box corners if needed
-    if have_perspective and perspective_matrix is not None:
-        corners_src = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32)
-        corners_dst = perspective_transform_points(corners_src, perspective_matrix)
-        wx1, wy1 = corners_dst[:, 0].min(), corners_dst[:, 1].min()
-        wx2, wy2 = corners_dst[:, 0].max(), corners_dst[:, 1].max()
-        detection_result['bbox_warp'] = [wx1, wy1, wx2, wy2]
-    else:
-        detection_result['bbox_warp'] = [x1, y1, x2, y2]
+    # Warp bounding box corners
+    corners_src = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32)
+    corners_dst = perspective_transform_points(corners_src, perspective_matrix)
+    wx1, wy1 = corners_dst[:, 0].min(), corners_dst[:, 1].min()
+    wx2, wy2 = corners_dst[:, 0].max(), corners_dst[:, 1].max()
+    detection_result['bbox_warp'] = [wx1, wy1, wx2, wy2]
 
-    # ----------------------------------
-    # If it's a person (cls=0), do pose and color check
-    # ----------------------------------
-    if c == 0:
-        keypoints_dict, warped_points = handle_pose_estimation(
-            im0s,
-            x1, y1, x2, y2,
-            have_perspective,
-            perspective_matrix,
-            pose_model
-        )
-        if keypoints_dict and warped_points is not None:
-            detection_result['keypoints'] = warped_points
-            detection_result['keypoints_conf'] = keypoints_dict['confidence']
-
-            # If clothes_colors is not None, do color matching
-            if clothes_colors_histogram is not None:
-                # Extract torso keypoints
-                keypoints = {
-                    'left_shoulder': keypoints_dict['points'][5],
-                    'right_shoulder': keypoints_dict['points'][6],
-                    'left_hip': keypoints_dict['points'][11],
-                    'right_hip': keypoints_dict['points'][12]
-                }
-
-                # Extract colors from the person's torso
-                skelton_colors_histogram = extract_color_histogram_from_rotated_skelton(
-                    im0s, keypoints
-                )
-
-                # Compute match score
-                score_val = compare_histograms(
-                    clothes_colors_histogram,
-                    skelton_colors_histogram
-                )
-                # print(f"Color match score: {score_val}")
-                detection_result['score'] = score_val
 
     return detection_result
 
@@ -500,19 +443,6 @@ def draw_all_detections(im0_warped, all_detections, pose_model, line_thickness=1
 
         # Draw bounding box
         annotator.box_label([x1, y1, x2, y2], label_str, color=colors(cls_id, True))
-
-        # Draw skeleton if any
-        if det['keypoints'] is not None and det['keypoints_conf'] is not None:
-            skel_info = {
-                'points': det['keypoints'],
-                'confidence': det['keypoints_conf']
-            }
-            onepose.visualize_keypoints(
-                annotator.im,
-                skel_info,
-                pose_model.keypoint_info,
-                pose_model.skeleton_info
-            )
 
         # Optionally save crop if needed
         if det['save_crop']:
@@ -709,8 +639,6 @@ def run(
     vid_stride=1,                     # video frame-rate stride
     goal_image_coordinate=None,       # list of 4 points [[x,y], [x,y], [x,y], [x,y]]
     goal_realworld_size=None,         # output width x height
-    goalkeeper_clothes_colors_histogram_path=None,    # list of LAB colors for color matching
-    ball_speed=0,                     # ball speed
 ):
     """
     Main detection + pose estimation pipeline.
@@ -722,7 +650,7 @@ def run(
     """
 
     # --- 1) Prepare perspective transform if needed ---
-    perspective_matrix, have_perspective = prepare_perspective(
+    perspective_matrix = prepare_perspective(
         goal_image_coordinate, goal_realworld_size
     )
 
@@ -734,24 +662,18 @@ def run(
     model, stride, names, pt = load_yolo_model(weights, device, dnn, data, half)
     imgsz = check_img_size(imgsz, s=stride)
 
-    # --- 4) Load Pose model ---
-    pose_model = load_pose_model()
-
-    # --- 5) Create dataloader ---
+    # --- 4) Create dataloader ---
     dataset, bs, webcam_mode = create_dataloader(
         source, imgsz, stride, pt, vid_stride
     )
 
-    # --- 6) Warm up YOLO model ---
+    # --- 5) Warm up YOLO model ---
     warmup_yolo_model(model, pt, bs, imgsz)
 
-    goalkeeper_clothes_colors_histogram = load_histogram(goalkeeper_clothes_colors_histogram_path)
-
-    # --- 7) Inference over dataset (main loop) ---
-    seen, windows, dt, behavior_dict = infer_on_dataset(
+    # --- 6) Inference over dataset (main loop) ---
+    seen, windows, dt = infer_on_dataset(
         dataset, 
         model,
-        pose_model,
         names,
         pt,
         imgsz,
@@ -762,11 +684,8 @@ def run(
         agnostic_nms,
         augment,
         visualize,
-        have_perspective,
         perspective_matrix,
         goal_realworld_size,
-        goalkeeper_clothes_colors_histogram,
-        ball_speed,
         save_img,
         save_txt,
         save_conf,
@@ -790,7 +709,6 @@ def run(
         weights
     )
 
-    print (behavior_dict)
 
 
 def parse_opt():
@@ -825,8 +743,7 @@ def parse_opt():
     parser.add_argument('--vid-stride', type=int, default=1, help='video frame-rate stride')
     parser.add_argument('--goal_image_coordinate', nargs='*' ,type=int, default=None, help='four points(x1,y1,...,x4,y4) for perspective transform')
     parser.add_argument('--goal_realworld_size', nargs='*' ,type=int, default=[2100, 700], help='output width x height')
-    parser.add_argument('--goalkeeper_clothes_colors_histogram_path', type=str, default = None, help = 'numpy array of HSV colors histogram')
-    parser.add_argument('--ball-speed', type=float, default=0, help='ball speed')
+
     opt = parser.parse_args()
 
     # Convert flat list to nested list of coordinates
@@ -854,8 +771,8 @@ if __name__ == "__main__":
     main(opt)
 
 # sample usage
-# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param2/8-1.mp4" --name 'test' --ball-speed 60 --goal_image_coordinate 99 201 1822 221 1813 793 86 771  --goalkeeper_clothes_colors_histogram_path ./data/histograms/8-1_goalkeeper_hist.npy --goal_realworld_size 2100 700 --classes 0 32
+# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param2/8-1.mp4" --name 'test_goal' --goal_image_coordinate 99 201 1822 221 1813 793 86 771  --goal_realworld_size 2100 700 --classes 0 32
 
-# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param1/10-1.mp4" --name 'test' --ball-speed 60 --goal_image_coordinate 178 173 1730 139 1712 746 227 777  --goalkeeper_clothes_colors_histogram_path ./data/histograms/10-1_goalkeeper_hist.npy --goal_realworld_size 2100 700 --classes 0 32
+# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param1/10-1.mp4" --name 'test_goal' --goal_image_coordinate 178 173 1730 139 1712 746 227 777  --goal_realworld_size 2100 700 --classes 0 32
 
-# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param3/C0026_cut1.mp4" --name 'test' --ball-speed 60 --goal_image_coordinate 348 322 1510 322 1509 700 357 708  --goalkeeper_clothes_colors_histogram_path ./data/histograms/10-1_goalkeeper_hist.npy --goal_realworld_size 2100 700 --classes 0 32 --view-img
+# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param3/C0026_cut1.mp4" --name 'test_goal' --goal_image_coordinate 348 322 1510 322 1509 700 357 708 --goal_realworld_size 2100 700 --classes 0 32

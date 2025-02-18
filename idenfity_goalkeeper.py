@@ -40,7 +40,7 @@ def extract_color_histogram_with_specific_background_color(image, mask=None, bin
     return hist
 
 
-def extract_color_histogram_from_rotated_skelton(image, skeleton_keypoints, bins=(50, 60, 60), expand_ratio=0.2, ignore_skin=True):
+def extract_color_histogram_from_rotated_skelton(image, skeleton_keypoints, bins=(50, 60, 60), expand_ratio=0.2, ignore_skin=False):
     """
     Extract the clothes histogram from an image using a rotated bounding box based on skeleton keypoints.
 
@@ -80,6 +80,9 @@ def extract_color_histogram_from_rotated_skelton(image, skeleton_keypoints, bins
     mask = np.zeros(image.shape[:2], dtype=np.uint8)
     box = cv2.boxPoints(rect).astype(int)  # Convert to corner points
     cv2.fillPoly(mask, [box], 255)
+
+    # cv2.imshow("mask", mask)
+    # cv2.waitKey(0)
 
     # Convert to HSV
     hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -192,33 +195,98 @@ def load_histogram(file_path):
 
 
 if __name__ == "__main__":
-    # Define the HSV range for white
-    white_range = ((0, 0, 200), (179, 30, 255))  # Low Saturation, High Value
 
-    # Skeleton keypoints for one person (example format)
     skeleton_keypoints = {
-    "left_shoulder": (58, 44),
-    "right_shoulder": (169, 42),
-    "left_hip": (72, 214),
-    "right_hip": (152, 213)
+        "left_shoulder": (898 , 405),
+        "right_shoulder": (1004 ,405),
+        "left_hip": (909, 526),
+        "right_hip": (995, 525)
     }
 
-    # Load images
-    goalkeeper_clothe_image = cv2.imread("./data/images/goalkeeper_clothes.jpg")
+    goal_keeper_image = cv2.imread("./data/images/10-1_first_frame.jpg")
 
-    # Extract histograms, ignoring white
-    goalkeeper_hist_from_image = extract_color_histogram_with_specific_background_color(goalkeeper_clothe_image, ignore_color_range=white_range)
+    #crop the image base on the skeleton keypoints
+    left_shoulder = skeleton_keypoints["left_shoulder"]
+    right_shoulder = skeleton_keypoints["right_shoulder"]
+    left_hip = skeleton_keypoints["left_hip"]
+    right_hip = skeleton_keypoints["right_hip"]
 
-    # Extract histograms from rotated bounding box
-    goalkeeper_hist_from_skelton = extract_color_histogram_from_rotated_skelton(goalkeeper_clothe_image, skeleton_keypoints)
+    # x1 = int(min(left_shoulder[0], right_shoulder[0], left_hip[0], right_hip[0]))
+    # x2 = int(max(left_shoulder[0], right_shoulder[0], left_hip[0], right_hip[0]))
+    # y1 = int(min(left_shoulder[1], right_shoulder[1], left_hip[1], right_hip[1]))
+    # y2 = int(max(left_shoulder[1], right_shoulder[1], left_hip[1], right_hip[1]))
 
-    score = compare_histograms(goalkeeper_hist_from_image, goalkeeper_hist_from_skelton)  # Should return 1.0
+    # goal_keeper_image = goal_keeper_image[y1:y2, x1:x2]
 
-    print(f"Similarity score: {score}")
+    # cv2.imshow("goalkeeper", goal_keeper_image)
+    # cv2.waitKey(0)
 
-    # Plot the histogram
-    plot_hsv_histogram(goalkeeper_hist_from_image, bins=(50, 60, 60))
+    goalkeeper_hist_from_skelton = extract_color_histogram_from_rotated_skelton(goal_keeper_image, skeleton_keypoints)
 
+    save_histogram(goalkeeper_hist_from_skelton, "./data/histograms/10-1_goalkeeper_hist.npy")
+    
+
+    plot_hsv_histogram(goalkeeper_hist_from_skelton, bins=(50, 60, 60))
+
+
+# if __name__ == "__main__":
+#     # Define the HSV range for white
+#     white_range = ((0, 0, 200), (179, 30, 255))  # Low Saturation, High Value
+
+#     # Skeleton keypoints for one person (example format)
+#     skeleton_keypoints = {
+#     "left_shoulder": (58, 44),
+#     "right_shoulder": (169, 42),
+#     "left_hip": (72, 214),
+#     "right_hip": (152, 213)
+#     }
+
+#     # Load images
+#     goalkeeper_clothe_image = cv2.imread("./data/images/goalkeeper_clothes.jpg")
+
+#     # Extract histograms, ignoring white
+#     goalkeeper_hist_from_image = extract_color_histogram_with_specific_background_color(goalkeeper_clothe_image, ignore_color_range=white_range)
+
+#     # Extract histograms from rotated bounding box
+#     goalkeeper_hist_from_skelton = extract_color_histogram_from_rotated_skelton(goalkeeper_clothe_image, skeleton_keypoints)
+
+#     score = compare_histograms(goalkeeper_hist_from_image, goalkeeper_hist_from_skelton)  # Should return 1.0
+
+#     print(f"Similarity score: {score}")
+
+#     # Plot the histogram
+#     plot_hsv_histogram(goalkeeper_hist_from_image, bins=(50, 60, 60))
+
+# if __name__ == "__main__":
+#     skeleton_keypoints = {
+#         "left_shoulder": (1164 , 609),
+#         "right_shoulder": (1217 ,608),
+#         "left_hip": (1183 ,667),
+#         "right_hip": (1218, 676)
+#     }
+
+#     goal_keeper_image = cv2.imread("./data/images/orange.png")
+#     #crop the image base on the skeleton keypoints
+#     left_shoulder = skeleton_keypoints["left_shoulder"]
+#     right_shoulder = skeleton_keypoints["right_shoulder"]
+#     left_hip = skeleton_keypoints["left_hip"]
+#     right_hip = skeleton_keypoints["right_hip"]
+
+#     x1 = int(min(left_shoulder[0], right_shoulder[0], left_hip[0], right_hip[0]))
+#     x2 = int(max(left_shoulder[0], right_shoulder[0], left_hip[0], right_hip[0]))
+#     y1 = int(min(left_shoulder[1], right_shoulder[1], left_hip[1], right_hip[1]))
+#     y2 = int(max(left_shoulder[1], right_shoulder[1], left_hip[1], right_hip[1]))
+
+#     goal_keeper_image = goal_keeper_image[y1:y2, x1:x2]
+
+#     # cv2.imshow("goalkeeper", goal_keeper_image)
+#     # cv2.waitKey(0)
+
+#     goalkeeper_hist_from_skelton = extract_color_histogram_from_rotated_skelton(goal_keeper_image, skeleton_keypoints)
+
+#     save_histogram(goalkeeper_hist_from_skelton, "./data/histograms/orange_goalkeeper_hist.npy")
+
+#     plot_hsv_histogram(goalkeeper_hist_from_skelton, bins=(50, 60, 60))
 
 # if __name__ == "__main__":
     # skeleton_keypoints = {

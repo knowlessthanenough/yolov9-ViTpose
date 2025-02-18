@@ -26,12 +26,12 @@ def classify_goalkeeper_behavior(all_frame_detections, ball_speed, distance_thre
     """
     body_centers = []  # To track the body center (average of keypoints 5, 6, 11, 12)
     ball_centers = []  # To track the ball's center
-    closest_distances = []  # To track closest distances for each frame
+    closest_distances = []  # To track closest skeleton point to the ball for each frame
     nose_positions = []  # To track the goalkeeper's nose positions
     foot_positions = {"left": [], "right": []}  # To track vertical positions of feet (keypoints 15, 16)
     elbow_positions = {"left": [], "right": []}  # To track vertical positions of elbows (keypoints 7, 8)
     tags = set()  # To store unique tags detected in the video
-
+    
     def calculate_angle(a, b, c):
         """
         Calculate the angle (in degrees) between three points a, b, and c.
