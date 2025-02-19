@@ -25,45 +25,6 @@ from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, smart_inference_mode
 
 
-def compute_perspective_transform(pts, width, height):
-    """Compute the perspective transform matrix from 4 points to (width x height)."""
-    src = np.float32(pts)
-    dst = np.float32([
-        [0, 0],
-        [width - 1, 0],
-        [width - 1, height - 1],
-        [0, height - 1]
-    ])
-    M = cv2.getPerspectiveTransform(src, dst)
-    return M
-
-
-def perspective_transform_points(points, M):
-    """
-    Transform a list (or array) of 2D points using a 3x3 perspective matrix M.
-    points: np.array of shape (N, 2).
-    returns: np.array of shape (N, 2) of transformed points.
-    """
-    pts = points.reshape(-1, 1, 2).astype(np.float32)
-    transformed_pts = cv2.perspectiveTransform(pts, M)
-    return transformed_pts.reshape(-1, 2)
-
-
-def prepare_perspective(goal_image_coordinate, goal_realworld_size):
-    """
-    Compute perspective matrix if 4 corner points provided. 
-    Returns (perspective_matrix, have_perspective).
-    """
-    if goal_image_coordinate and len(goal_image_coordinate) == 4:
-        perspective_matrix = compute_perspective_transform(
-            goal_image_coordinate,
-            goal_realworld_size[0],
-            goal_realworld_size[1]
-        )
-        print("Perspective matrix:", perspective_matrix)
-        return perspective_matrix, True
-    else:
-        return None, False
 
 
 def setup_output_dir(project, name, exist_ok, save_txt):
@@ -144,9 +105,6 @@ def infer_on_dataset(
     agnostic_nms,
     augment,
     visualize,
-    have_perspective,
-    perspective_matrix,
-    goal_realworld_size,
     goalkeeper_clothes_colors_histogram,  # If not None, we pick best skeleton among persons
     ball_speed,
     save_img,
@@ -217,15 +175,8 @@ def infer_on_dataset(
                 '' if dataset.mode == 'image' else f'_{frame}'
             )
 
-            # Possibly warp entire frame
-            if have_perspective:
-                im0_warped = cv2.warpPerspective(
-                    im0,
-                    perspective_matrix,
-                    (goal_realworld_size[0], goal_realworld_size[1])
-                )
-            else:
-                im0_warped = im0
+
+            im0_warped = im0
 
             # Rescale boxes
             if len(det):
@@ -249,8 +200,6 @@ def infer_on_dataset(
                         xyxy,
                         conf,
                         cls_id,
-                        have_perspective,
-                        perspective_matrix,
                         pose_model,
                         save_crop,
                         hide_labels,
@@ -290,11 +239,10 @@ def infer_on_dataset(
             # -------------
             # (A) Save detections to YOLO TXT
             # -------------
-            if save_txt and goal_realworld_size is not None and len(all_detections_for_frame) > 0:
+            if save_txt and len(all_detections_for_frame) > 0:
                 save_all_detections_txt(
                     all_detections_for_frame,
                     txt_path,
-                    goal_realworld_size,
                     save_conf
                 )
 
@@ -352,8 +300,6 @@ def process_single_detection(
     xyxy,
     conf,
     cls,
-    have_perspective,
-    perspective_matrix,
     pose_model,
     save_crop,
     hide_labels,
@@ -389,15 +335,8 @@ def process_single_detection(
         else:
             detection_result['label_str'] = f'{names[c]} {conf:.2f}'
 
-    # Warp bounding box corners if needed
-    if have_perspective and perspective_matrix is not None:
-        corners_src = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32)
-        corners_dst = perspective_transform_points(corners_src, perspective_matrix)
-        wx1, wy1 = corners_dst[:, 0].min(), corners_dst[:, 1].min()
-        wx2, wy2 = corners_dst[:, 0].max(), corners_dst[:, 1].max()
-        detection_result['bbox_warp'] = [wx1, wy1, wx2, wy2]
-    else:
-        detection_result['bbox_warp'] = [x1, y1, x2, y2]
+
+    detection_result['bbox_warp'] = [x1, y1, x2, y2]
 
     # ----------------------------------
     # If it's a person (cls=0), do pose and color check
@@ -406,8 +345,6 @@ def process_single_detection(
         keypoints_dict, warped_points = handle_pose_estimation(
             im0s,
             x1, y1, x2, y2,
-            have_perspective,
-            perspective_matrix,
             pose_model
         )
         if keypoints_dict and warped_points is not None:
@@ -443,7 +380,6 @@ def process_single_detection(
 def save_all_detections_txt(
     all_detections,
     txt_path,
-    goal_realworld_size,
     save_conf
 ):
     """
@@ -471,10 +407,10 @@ def save_all_detections_txt(
             cy = wy1 + bh / 2
 
             # normalize
-            norm_cx = cx / goal_realworld_size[0]
-            norm_cy = cy / goal_realworld_size[1]
-            norm_w  = bw / goal_realworld_size[0]
-            norm_h  = bh / goal_realworld_size[1]
+            norm_cx = cx
+            norm_cy = cy
+            norm_w  = bw
+            norm_h  = bh
 
             if save_conf:
                 line = (c, norm_cx, norm_cy, norm_w, norm_h, conf, *keypoints_global)
@@ -531,8 +467,6 @@ def draw_all_detections(im0_warped, all_detections, pose_model, line_thickness=1
 def handle_pose_estimation(
     im0s,
     x1, y1, x2, y2,
-    have_perspective,
-    perspective_matrix,
     pose_model
 ):
     """
@@ -559,17 +493,9 @@ def handle_pose_estimation(
         points[idx][0] += x1_safe
         points[idx][1] += y1_safe
 
-    # If perspective, warp skeleton coords
-    if have_perspective and perspective_matrix is not None:
-        skel_src = np.array(points, dtype=np.float32)
-        skel_dst = perspective_transform_points(skel_src, perspective_matrix)
 
-        # Optionally clamp them to the warped image size
-        # but we can just pass them along if you don't need strict clamping
-        return keypoints_dict, skel_dst  
-    else:
-        # Return the original coords
-        return keypoints_dict, points
+    # Return the original coords
+    return keypoints_dict, points
 
 
 def save_cropped(
@@ -721,33 +647,28 @@ def run(
     Otherwise, fallback to the original image as usual.
     """
 
-    # --- 1) Prepare perspective transform if needed ---
-    perspective_matrix, have_perspective = prepare_perspective(
-        goal_image_coordinate, goal_realworld_size
-    )
-
-    # --- 2) Setup output directory ---
+    # --- 1) Setup output directory ---
     save_dir = setup_output_dir(project, name, exist_ok, save_txt)
     save_img = not nosave and not str(source).endswith('.txt')
 
-    # --- 3) Load YOLO model ---
+    # --- 2) Load YOLO model ---
     model, stride, names, pt = load_yolo_model(weights, device, dnn, data, half)
     imgsz = check_img_size(imgsz, s=stride)
 
-    # --- 4) Load Pose model ---
+    # --- 3) Load Pose model ---
     pose_model = load_pose_model()
 
-    # --- 5) Create dataloader ---
+    # --- 4) Create dataloader ---
     dataset, bs, webcam_mode = create_dataloader(
         source, imgsz, stride, pt, vid_stride
     )
 
-    # --- 6) Warm up YOLO model ---
+    # --- 5) Warm up YOLO model ---
     warmup_yolo_model(model, pt, bs, imgsz)
 
     goalkeeper_clothes_colors_histogram = load_histogram(goalkeeper_clothes_colors_histogram_path)
 
-    # --- 7) Inference over dataset (main loop) ---
+    # --- 6) Inference over dataset (main loop) ---
     seen, windows, dt, behavior_dict = infer_on_dataset(
         dataset, 
         model,
@@ -762,9 +683,6 @@ def run(
         agnostic_nms,
         augment,
         visualize,
-        have_perspective,
-        perspective_matrix,
-        goal_realworld_size,
         goalkeeper_clothes_colors_histogram,
         ball_speed,
         save_img,
@@ -778,7 +696,7 @@ def run(
         save_dir
     )
 
-    # --- 8) Summaries & Cleanup ---
+    # --- 7) Summaries & Cleanup ---
     summarize_and_cleanup(
         dt,
         seen,
@@ -823,22 +741,11 @@ def parse_opt():
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
     parser.add_argument('--vid-stride', type=int, default=1, help='video frame-rate stride')
-    parser.add_argument('--goal_image_coordinate', nargs='*' ,type=int, default=None, help='four points(x1,y1,...,x4,y4) for perspective transform')
-    parser.add_argument('--goal_realworld_size', nargs='*' ,type=int, default=[2100, 700], help='output width x height')
     parser.add_argument('--goalkeeper_clothes_colors_histogram_path', type=str, default = None, help = 'numpy array of HSV colors histogram')
     parser.add_argument('--ball-speed', type=float, default=0, help='ball speed')
     opt = parser.parse_args()
 
     # Convert flat list to nested list of coordinates
-    if opt.goal_image_coordinate:
-        if len(opt.goal_image_coordinate) != 8:
-            raise ValueError("Please provide 4 points x,y coordinate for perspective transform.")
-        
-        opt.goal_image_coordinate = [
-            [opt.goal_image_coordinate[i], opt.goal_image_coordinate[i + 1]] 
-            for i in range(0, len(opt.goal_image_coordinate), 2)
-        ]
-
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1
     print_args(vars(opt))
     return opt
@@ -854,8 +761,8 @@ if __name__ == "__main__":
     main(opt)
 
 # sample usage
-# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param2/8-1.mp4" --name 'test' --ball-speed 60 --goal_image_coordinate 99 201 1822 221 1813 793 86 771  --goalkeeper_clothes_colors_histogram_path ./data/histograms/8-1_goalkeeper_hist.npy --goal_realworld_size 2100 700 --classes 0 32
+# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param2/8-1.mp4" --name 'test' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/8-1_goalkeeper_hist.npy --classes 0 32
 
-# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param1/10-1.mp4" --name 'test' --ball-speed 60 --goal_image_coordinate 178 173 1730 139 1712 746 227 777  --goalkeeper_clothes_colors_histogram_path ./data/histograms/10-1_goalkeeper_hist.npy --goal_realworld_size 2100 700 --classes 0 32
+# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param1/10-1.mp4" --name 'test' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/10-1_goalkeeper_hist.npy --classes 0 32
 
-# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param3/C0026_cut1.mp4" --name 'test' --ball-speed 60 --goal_image_coordinate 348 322 1510 322 1509 700 357 708  --goalkeeper_clothes_colors_histogram_path ./data/histograms/10-1_goalkeeper_hist.npy --goal_realworld_size 2100 700 --classes 0 32 --view-img
+# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param3/C0026_cut1.mp4" --name 'test' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/10-1_goalkeeper_hist.npy --classes 0 32

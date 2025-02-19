@@ -197,13 +197,13 @@ def load_histogram(file_path):
 if __name__ == "__main__":
 
     skeleton_keypoints = {
-        "left_shoulder": (898 , 405),
-        "right_shoulder": (1004 ,405),
-        "left_hip": (909, 526),
-        "right_hip": (995, 525)
+        "left_shoulder": (1442 , 384),
+        "right_shoulder": (1548 ,362),
+        "left_hip": (1482, 472),
+        "right_hip": (1557, 460)
     }
 
-    goal_keeper_image = cv2.imread("./data/images/10-1_first_frame.jpg")
+    goal_keeper_image = cv2.imread("./data/images/real_goal2.jpg")
 
     #crop the image base on the skeleton keypoints
     left_shoulder = skeleton_keypoints["left_shoulder"]
@@ -223,7 +223,7 @@ if __name__ == "__main__":
 
     goalkeeper_hist_from_skelton = extract_color_histogram_from_rotated_skelton(goal_keeper_image, skeleton_keypoints)
 
-    save_histogram(goalkeeper_hist_from_skelton, "./data/histograms/10-1_goalkeeper_hist.npy")
+    save_histogram(goalkeeper_hist_from_skelton, "./data/histograms/real_goal2.npy")
     
 
     plot_hsv_histogram(goalkeeper_hist_from_skelton, bins=(50, 60, 60))

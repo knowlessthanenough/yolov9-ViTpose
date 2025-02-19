@@ -270,16 +270,27 @@ def infer_on_dataset(
             else:
                 # 3) We are not skipping => check for big ball triggers
                 #    In your code, “all_detections_for_frame” holds all det results
+
+                # Dimensions of the warped image
+                im0_h, im0_w = im0_warped.shape[:2]
                 triggered = False
+
                 for det_result in all_detections_for_frame:
                     if det_result['cls'] == 32:  # ball class
                         wx1, wy1, wx2, wy2 = det_result['bbox_warp']
                         w = wx2 - wx1
                         h = wy2 - wy1
-                        # both > 75 => trigger
-                        if w > 75 and h > 75:
-                            triggered = True
-                            break
+                        
+                        # Calculate center of warped bbox
+                        cx = (wx1 + wx2) / 2.0
+                        cy = (wy1 + wy2) / 2.0
+                        
+                        # 1) Check if center is inside warped image
+                        if 0 <= cx < im0_w and 0 <= cy < im0_h:
+                            # 2) Check if w >= 75 OR h >= 75
+                            if w >= 75 or h >= 75:
+                                triggered = True
+                                break
 
                 # 4) If triggered => save a new short clip
                 if triggered:
@@ -722,8 +733,8 @@ def parse_opt():
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='dataset.yaml path')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640],
                         help='inference size h,w')
-    parser.add_argument('--conf-thres', type=float, default=0.4, help='confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
+    parser.add_argument('--conf-thres', type=float, default=0.7, help='confidence threshold')
+    parser.add_argument('--iou-thres', type=float, default=0.7, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--view-img', action='store_true', help='show results')
@@ -779,5 +790,7 @@ if __name__ == "__main__":
 # python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param2/8-1.mp4" --name 'test_goal' --goal_image_coordinate 99 201 1822 221 1813 793 86 771  --goal_realworld_size 2100 700 --classes 0 32
 
 # python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param1/10-1.mp4" --name 'test_goal' --goal_image_coordinate 178 173 1730 139 1712 746 227 777  --goal_realworld_size 2100 700 --classes 0 32
+
+# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/C0026.mp4" --name 'real_goal' --goal_image_coordinate 355 330 1504 329 1499 710 365 712  --goal_realworld_size 2400 800 --classes 0 32 --nosave
 
 # python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param3/C0026_cut1.mp4" --name 'test_goal' --goal_image_coordinate 348 322 1510 322 1509 700 357 708 --goal_realworld_size 2100 700 --classes 0 32
