@@ -146,7 +146,8 @@ def infer_on_dataset(
     hide_labels,
     hide_conf,
     view_img,
-    save_dir
+    save_dir,
+    draw_bbox,
 ):
     """
     Main inference loop.
@@ -253,11 +254,12 @@ def infer_on_dataset(
             # -------------
             # (B) Draw bounding boxes
             # -------------
-            draw_all_detections(
-                im0_warped,
-                all_detections_for_frame,
-                line_thickness
-            )
+            if draw_bbox:
+                draw_all_detections(
+                    im0_warped,
+                    all_detections_for_frame,
+                    line_thickness
+                )
 
             # 1) Store the final annotated frame in our buffer
             frames_buffer.append(im0_warped.copy())  # copy() so we don’t overwrite by reference
@@ -639,6 +641,7 @@ def run(
     vid_stride=1,                     # video frame-rate stride
     goal_image_coordinate=None,       # list of 4 points [[x,y], [x,y], [x,y], [x,y]]
     goal_realworld_size=None,         # output width x height
+    draw_bbox=False,
 ):
     """
     Main detection + pose estimation pipeline.
@@ -694,7 +697,8 @@ def run(
         hide_labels,
         hide_conf,
         view_img,
-        save_dir
+        save_dir,
+        draw_bbox,
     )
 
     # --- 8) Summaries & Cleanup ---
@@ -743,6 +747,7 @@ def parse_opt():
     parser.add_argument('--vid-stride', type=int, default=1, help='video frame-rate stride')
     parser.add_argument('--goal_image_coordinate', nargs='*' ,type=int, default=None, help='four points(x1,y1,...,x4,y4) for perspective transform')
     parser.add_argument('--goal_realworld_size', nargs='*' ,type=int, default=[2100, 700], help='output width x height')
+    parser.add_argument('--draw-bbox', action='store_true', help='draw bounding boxes')
 
     opt = parser.parse_args()
 
