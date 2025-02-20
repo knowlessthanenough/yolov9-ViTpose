@@ -4,16 +4,37 @@ import numpy as np
 def classify_goalkeeper_behavior(
     all_frame_detections,
     ball_speed,
-    distance_threshold=100,
-    movement_threshold=600,
-    speed_threshold=50,
-    jump_threshold=100,
-    elbow_angle_threshold=160
+    distance_threshold,
+    movement_threshold,
+    speed_threshold,
+    jump_threshold,
+    elbow_angle_threshold,
 ):
     """
     Classifies goalkeeper behavior for multiple cases (0,2,...,10).
     If no goalkeeper or no ball is detected at all, returns [0].
     Otherwise, collects final tags (2..10) or [0] if none.
+
+    Classifies goalkeeper behavior for three cases:
+    - Class 0 : No any bellow class detected.
+    - Class 2: Ball is far from skeleton, and goalkeeper's movement is limited.
+    - Class 3: Goalkeeper's last 5-frame average center is farther from the ball than the first 5-frame average center.
+    - Class 4: Ball above the skeleton nose point but low or not jump to catch the ball.
+    - Class 5: Ball above the skeleton nose point but low or not elbow to catch the ball.
+    - Class 6: Elbow angle is below the threshold (degrees) when the ball is in the shoulder-centered area.
+    - Class 7: Elbow angle is decreasing over time when the ball is in the shoulder-centered area.
+    - Class 8: Ball speed is below the threshold (km/h).
+    - Class 9: low speed & ball is in the shoulder-centered area.
+    - Class 10: Ball is within the area formed by skeleton points.
+
+    Args:
+        all_frame_detections (list): List of frame detections. Each entry is a list of detection dictionaries.
+        distance_threshold (float): Maximum average distance for the last 10 frames for classification.
+        movement_threshold (float): Maximum movement of the goalkeeper's body center for classification.
+
+    Returns:
+        list: A list of integers representing the tags for the video: [1], [2], [3], or combinations.
+
     """
     seen_ball = False
     seen_goalkeeper = False

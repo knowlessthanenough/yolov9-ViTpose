@@ -115,7 +115,12 @@ def infer_on_dataset(
     hide_labels,
     hide_conf,
     view_img,
-    save_dir
+    save_dir,
+    distance_threshold,
+    movement_threshold,
+    speed_threshold,
+    jump_threshold,
+    elbow_angle_threshold
 ):
     """
     Main inference loop.
@@ -287,7 +292,7 @@ def infer_on_dataset(
         # print("----------------------------Classifying goalkeeper behavior----------------------------")
         for video_path, video_detections in video_detections:
             if video_detections:  # Ensure there are detections for this video
-                behavior_dict[video_path] = classify_goalkeeper_behavior(video_detections, ball_speed)
+                behavior_dict[video_path] = classify_goalkeeper_behavior(video_detections, ball_speed, distance_threshold, movement_threshold, speed_threshold, jump_threshold, elbow_angle_threshold)
             else:
                 behavior_dict[video_path] = "No detections"
             # print("the video is classify as behavior " , behaviors)
@@ -606,37 +611,40 @@ def summarize_and_cleanup(
 
 @smart_inference_mode()
 def run(
-    weights=ROOT / 'yolo.pt',         # model path or triton URL
-    source=ROOT / 'data/images',      # file/dir/URL/glob/screen/0(webcam)
-    data=ROOT / 'data/coco.yaml',     # dataset.yaml path
-    imgsz=(640, 640),                 # inference size (height, width)
-    conf_thres=0.25,                  # confidence threshold
-    iou_thres=0.45,                   # NMS IOU threshold
-    max_det=1000,                     # maximum detections per image
-    device='',                        # cuda device, i.e. 0, 0,1,2,3 or cpu
-    view_img=False,                   # show results
-    save_txt=False,                   # save results to *.txt
-    save_conf=False,                  # save confidences in --save-txt labels
-    save_crop=False,                  # save cropped prediction boxes
-    nosave=False,                     # do not save images/videos
-    classes=None,                     # filter by class: --class 0, or --class 0 2 3
-    agnostic_nms=False,               # class-agnostic NMS
-    augment=False,                    # augmented inference
-    visualize=False,                  # visualize features
-    update=False,                     # update all models
-    project=ROOT / 'runs/detect',     # save results to project/name
-    name='exp',                       # save results to project/name
-    exist_ok=False,                   # existing project/name ok, do not increment
-    line_thickness=1,                 # bounding box thickness (pixels)
-    hide_labels=False,                # hide labels
-    hide_conf=False,                  # hide confidences
-    half=True,                       # use FP16 half-precision inference
-    dnn=False,                        # use OpenCV DNN for ONNX inference
-    vid_stride=1,                     # video frame-rate stride
-    goal_image_coordinate=None,       # list of 4 points [[x,y], [x,y], [x,y], [x,y]]
-    goal_realworld_size=None,         # output width x height
-    goalkeeper_clothes_colors_histogram_path=None,    # list of LAB colors for color matching
-    ball_speed=0,                     # ball speed
+    weights,         # model path or triton URL
+    source,      # file/dir/URL/glob/screen/0(webcam)
+    data,     # dataset.yaml path
+    imgsz,                 # inference size (height, width)
+    conf_thres,                  # confidence threshold
+    iou_thres,                   # NMS IOU threshold
+    max_det,                     # maximum detections per image
+    device,                        # cuda device, i.e. 0, 0,1,2,3 or cpu
+    view_img,                   # show results
+    save_txt,                   # save results to *.txt
+    save_conf,                  # save confidences in --save-txt labels
+    save_crop,                  # save cropped prediction boxes
+    nosave,                     # do not save images/videos
+    classes,                     # filter by class: --class 0, or --class 0 2 3
+    agnostic_nms,               # class-agnostic NMS
+    augment,                    # augmented inference
+    visualize,                  # visualize features
+    update,                     # update all models
+    project,     # save results to project/name
+    name,                       # save results to project/name
+    exist_ok,                   # existing project/name ok, do not increment
+    line_thickness,                 # bounding box thickness (pixels)
+    hide_labels,                # hide labels
+    hide_conf,                  # hide confidences
+    half,                       # use FP16 half-precision inference
+    dnn,                        # use OpenCV DNN for ONNX inference
+    vid_stride,                     # video frame-rate stride
+    goalkeeper_clothes_colors_histogram_path,    # list of LAB colors for color matching
+    ball_speed,                     # ball speed
+    distance_threshold,
+    movement_threshold,
+    speed_threshold,
+    jump_threshold,
+    elbow_angle_threshold,
 ):
     """
     Main detection + pose estimation pipeline.
@@ -693,7 +701,12 @@ def run(
         hide_labels,
         hide_conf,
         view_img,
-        save_dir
+        save_dir,
+        distance_threshold,
+        movement_threshold,
+        speed_threshold,
+        jump_threshold,
+        elbow_angle_threshold
     )
 
     # --- 7) Summaries & Cleanup ---
@@ -727,7 +740,7 @@ def parse_opt():
     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
     parser.add_argument('--save-crop', action='store_true', help='save cropped prediction boxes')
     parser.add_argument('--nosave', action='store_true', help='do not save images/videos')
-    parser.add_argument('--classes', nargs='+', type=int, help='filter by class')
+    parser.add_argument('--classes', nargs='+', type=int, default=[0 ,32], help='filter by class')
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
     parser.add_argument('--augment', action='store_true', help='augmented inference')
     parser.add_argument('--visualize', action='store_true', help='visualize features')
@@ -743,6 +756,11 @@ def parse_opt():
     parser.add_argument('--vid-stride', type=int, default=1, help='video frame-rate stride')
     parser.add_argument('--goalkeeper_clothes_colors_histogram_path', type=str, default = None, help = 'numpy array of HSV colors histogram')
     parser.add_argument('--ball-speed', type=float, default=0, help='ball speed')
+    parser.add_argument('--distance_threshold', type=float, default=100, help='distance threshold')
+    parser.add_argument('--movement_threshold', type=float, default=600, help='movement threshold')
+    parser.add_argument('--speed_threshold', type=float, default=50, help='speed threshold')
+    parser.add_argument('--jump_threshold', type=float, default=100, help='jump threshold')
+    parser.add_argument('--elbow_angle_threshold', type=float, default=160, help='elbow angle threshold')
     opt = parser.parse_args()
 
     # Convert flat list to nested list of coordinates
@@ -761,8 +779,6 @@ if __name__ == "__main__":
     main(opt)
 
 # sample usage
-# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param2/8-1.mp4" --name 'test' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/8-1_goalkeeper_hist.npy --classes 0 32
+# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param2/8-1.mp4" --name 'test' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/8-1_goalkeeper_hist.npy
 
-# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param1/10-1.mp4" --name 'test' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/10-1_goalkeeper_hist.npy --classes 0 32
-
-# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param3/C0026_cut1.mp4" --name 'test' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/10-1_goalkeeper_hist.npy --classes 0 32
+# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param1/10-1.mp4" --name 'test' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/10-1_goalkeeper_hist.npy
