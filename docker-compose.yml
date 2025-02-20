@@ -18,9 +18,10 @@ services:
     devices:
       - "/dev/ttyS3:/dev/ttyS3"  # Map the host COM port to the container (adjust ttyS3 as needed)
     volumes:
-      - ../dataset/:/coco/  # Mount the local COCO dataset path
-      - ../:/yolov9  # Mount the local code directory
+      - ./dataset/:/coco/  # Mount the local COCO dataset path
+      - ./:/yolov9  # Mount the local code directory
       - /tmp/.X11-unix:/tmp/.X11-unix  # Mount the X11 socket for GUI
+      - ./onepose_weights:/opt/conda/lib/python3.8/site-packages/onepose/models/weights
     working_dir: /yolov9  # Set working directory inside container
     stdin_open: true  # Equivalent to `-i` to keep STDIN open
     tty: true  # Allocate a pseudo-TTY
