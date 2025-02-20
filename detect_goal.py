@@ -280,7 +280,7 @@ def infer_on_dataset(
                         wx1, wy1, wx2, wy2 = det_result['bbox_warp']
                         w = wx2 - wx1
                         h = wy2 - wy1
-                        
+
                         # Calculate center of warped bbox
                         cx = (wx1 + wx2) / 2.0
                         cy = (wy1 + wy2) / 2.0
@@ -623,36 +623,36 @@ def summarize_and_cleanup(
 
 @smart_inference_mode()
 def run(
-    weights=ROOT / 'yolo.pt',         # model path or triton URL
-    source=ROOT / 'data/images',      # file/dir/URL/glob/screen/0(webcam)
-    data=ROOT / 'data/coco.yaml',     # dataset.yaml path
-    imgsz=(640, 640),                 # inference size (height, width)
-    conf_thres=0.25,                  # confidence threshold
-    iou_thres=0.45,                   # NMS IOU threshold
-    max_det=1000,                     # maximum detections per image
-    device='',                        # cuda device, i.e. 0, 0,1,2,3 or cpu
-    view_img=False,                   # show results
-    save_txt=False,                   # save results to *.txt
-    save_conf=False,                  # save confidences in --save-txt labels
-    save_crop=False,                  # save cropped prediction boxes
-    nosave=False,                     # do not save images/videos
-    classes=None,                     # filter by class: --class 0, or --class 0 2 3
-    agnostic_nms=False,               # class-agnostic NMS
-    augment=False,                    # augmented inference
-    visualize=False,                  # visualize features
-    update=False,                     # update all models
-    project=ROOT / 'runs/detect',     # save results to project/name
-    name='exp',                       # save results to project/name
-    exist_ok=False,                   # existing project/name ok, do not increment
-    line_thickness=1,                 # bounding box thickness (pixels)
-    hide_labels=False,                # hide labels
-    hide_conf=False,                  # hide confidences
-    half=True,                       # use FP16 half-precision inference
-    dnn=False,                        # use OpenCV DNN for ONNX inference
-    vid_stride=1,                     # video frame-rate stride
-    goal_image_coordinate=None,       # list of 4 points [[x,y], [x,y], [x,y], [x,y]]
-    goal_realworld_size=None,         # output width x height
-    draw_bbox=False,
+    weights,         # model path or triton URL
+    source,      # file/dir/URL/glob/screen/0(webcam)
+    data,     # dataset.yaml path
+    imgsz,                 # inference size (height, width)
+    conf_thres,                  # confidence threshold
+    iou_thres,                   # NMS IOU threshold
+    max_det,                     # maximum detections per image
+    device,                        # cuda device, i.e. 0, 0,1,2,3 or cpu
+    view_img,                   # show results
+    save_txt,                   # save results to *.txt
+    save_conf,                  # save confidences in --save-txt labels
+    save_crop,                  # save cropped prediction boxes
+    nosave,                     # do not save images/videos
+    classes,                     # filter by class: --class 0, or --class 0 2 3
+    agnostic_nms,               # class-agnostic NMS
+    augment,                    # augmented inference
+    visualize,                  # visualize features
+    update,                     # update all models
+    project,     # save results to project/name
+    name,                       # save results to project/name
+    exist_ok,                   # existing project/name ok, do not increment
+    line_thickness,                 # bounding box thickness (pixels)
+    hide_labels,                # hide labels
+    hide_conf,                  # hide confidences
+    half,                       # use FP16 half-precision inference
+    dnn,                        # use OpenCV DNN for ONNX inference
+    vid_stride,                     # video frame-rate stride
+    goal_image_coordinate,       # list of 4 points [[x,y], [x,y], [x,y], [x,y]]
+    goal_realworld_size,         # output width x height
+    draw_bbox,
 ):
     """
     Main detection + pose estimation pipeline.
@@ -736,13 +736,13 @@ def parse_opt():
     parser.add_argument('--conf-thres', type=float, default=0.7, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.7, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--device', default=0, help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--view-img', action='store_true', help='show results')
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
     parser.add_argument('--save-crop', action='store_true', help='save cropped prediction boxes')
     parser.add_argument('--nosave', action='store_true', help='do not save images/videos')
-    parser.add_argument('--classes', nargs='+', type=int, help='filter by class')
+    parser.add_argument('--classes', nargs='+', type=int, default=[0 ,32], help='filter by class')
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
     parser.add_argument('--augment', action='store_true', help='augmented inference')
     parser.add_argument('--visualize', action='store_true', help='visualize features')
@@ -787,10 +787,10 @@ if __name__ == "__main__":
     main(opt)
 
 # sample usage
-# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param2/8-1.mp4" --name 'test_goal' --goal_image_coordinate 99 201 1822 221 1813 793 86 771  --goal_realworld_size 2100 700 --classes 0 32
+# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/param2/8-1.mp4" --name 'test_goal' --goal_image_coordinate 99 201 1822 221 1813 793 86 771  --goal_realworld_size 2100 700 --nosave
 
-# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param1/10-1.mp4" --name 'test_goal' --goal_image_coordinate 178 173 1730 139 1712 746 227 777  --goal_realworld_size 2100 700 --classes 0 32
+# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/param1/10-1.mp4" --name 'test_goal' --goal_image_coordinate 178 173 1730 139 1712 746 227 777  --goal_realworld_size 2100 700 --nosave
 
-# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/C0026.mp4" --name 'real_goal' --goal_image_coordinate 355 330 1504 329 1499 710 365 712  --goal_realworld_size 2400 800 --classes 0 32 --nosave
+# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/C0026.mp4" --name 'real_goal' --goal_image_coordinate 355 330 1504 329 1499 710 365 712  --goal_realworld_size 2400 800 --nosave
 
-# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param3/C0026_cut1.mp4" --name 'test_goal' --goal_image_coordinate 348 322 1510 322 1509 700 357 708 --goal_realworld_size 2100 700 --classes 0 32
+# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/GX040011.mp4" --name 'real_goal2' --goal_image_coordinate 498 382 1415 387 1405 681 504 686  --goal_realworld_size 2400 800 --nosave

@@ -734,7 +734,7 @@ def parse_opt():
     parser.add_argument('--conf-thres', type=float, default=0.4, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--device', default=0, help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--view-img', action='store_true', help='show results')
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
@@ -779,6 +779,8 @@ if __name__ == "__main__":
     main(opt)
 
 # sample usage
-# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param2/8-1.mp4" --name 'test' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/8-1_goalkeeper_hist.npy
+# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/param2/8-1.mp4" --name 'test' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/8-1_goalkeeper_hist.npy
 
-# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --device 0 --source "./data/video/param1/10-1.mp4" --name 'test' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/10-1_goalkeeper_hist.npy
+# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/param1/10-1.mp4" --name 'test' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/10-1_goalkeeper_hist.npy
+
+# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --source "./runs/detect/real_goal2-2/clips/" --name 'real_goal2_anly' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/real_goal2.npy
