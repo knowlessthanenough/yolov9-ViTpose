@@ -122,13 +122,6 @@ def infer_on_dataset(
     jump_threshold,
     elbow_angle_threshold
 ):
-    """
-    Main inference loop.
-    If goalkeeper_clothes_colors_histogram_path is passed, 
-    we only show the skeleton of the single highest-scoring person 
-    (based on color match).
-    Otherwise, we show skeletons for all persons.
-    """
     vid_path, vid_writer = [None] * 1, [None] * 1
     seen, windows = 0, []
     dt = (Profile(), Profile(), Profile())

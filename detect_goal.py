@@ -149,13 +149,6 @@ def infer_on_dataset(
     save_dir,
     draw_bbox,
 ):
-    """
-    Main inference loop.
-    If goalkeeper_clothes_colors_histogram_path is passed, 
-    we only show the skeleton of the single highest-scoring person 
-    (based on color match).
-    Otherwise, we show skeletons for all persons.
-    """
     vid_path, vid_writer = [None] * 1, [None] * 1
     seen, windows = 0, []
     dt = (Profile(), Profile(), Profile())
@@ -164,7 +157,8 @@ def infer_on_dataset(
     skip_counter = 0                 # if > 0, skip checking “big ball” triggers
     clip_index = 0                   # to name each saved clip uniquely
     fps = 30                         # (optional) frames per second for each clip
-    
+    speed_dict = {}                  # store speed data for each clip
+
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         # --------------------------------------
         # 1) Preprocessing & YOLO Inference
@@ -313,6 +307,8 @@ def infer_on_dataset(
                     for old_frame in frames_buffer:
                         writer.write(old_frame)
 
+                    speed_dict[clip_name] = 0.0  # placeholder for speed data
+
                     # (b) Since frames_buffer already appended the current frame,
                     #     we do NOT need to write it again. The current frame is
                     #     the last item in frames_buffer. If you prefer to add it
@@ -344,7 +340,7 @@ def infer_on_dataset(
 
         LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
 
-    return seen, windows, dt
+    return seen, windows, dt, speed_dict
 
 
 def process_single_detection(
@@ -685,7 +681,7 @@ def run(
     warmup_yolo_model(model, pt, bs, imgsz)
 
     # --- 6) Inference over dataset (main loop) ---
-    seen, windows, dt = infer_on_dataset(
+    seen, windows, dt, speed_dict = infer_on_dataset(
         dataset, 
         model,
         names,
@@ -724,6 +720,10 @@ def run(
         weights
     )
 
+    print(speed_dict)
+
+
+
 
 
 def parse_opt():
@@ -759,6 +759,7 @@ def parse_opt():
     parser.add_argument('--goal_image_coordinate', nargs='*' ,type=int, default=None, help='four points(x1,y1,...,x4,y4) for perspective transform')
     parser.add_argument('--goal_realworld_size', nargs='*' ,type=int, default=[2100, 700], help='output width x height')
     parser.add_argument('--draw-bbox', action='store_true', help='draw bounding boxes')
+    parser.add_argument('--radar_data', type=str, default=None, help='radar data path')
 
     opt = parser.parse_args()
 
