@@ -149,13 +149,6 @@ def infer_on_dataset(
     save_dir,
     draw_bbox,
 ):
-    """
-    Main inference loop.
-    If goalkeeper_clothes_colors_histogram_path is passed, 
-    we only show the skeleton of the single highest-scoring person 
-    (based on color match).
-    Otherwise, we show skeletons for all persons.
-    """
     vid_path, vid_writer = [None] * 1, [None] * 1
     seen, windows = 0, []
     dt = (Profile(), Profile(), Profile())
@@ -164,11 +157,26 @@ def infer_on_dataset(
     skip_counter = 0                 # if > 0, skip checking “big ball” triggers
     clip_index = 0                   # to name each saved clip uniquely
     fps = 30                         # (optional) frames per second for each clip
-    
+    speed_dict = {}                  # store speed data for each clip
+    prev_video_id = None  # Track the previous video's identifier
+
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         # --------------------------------------
         # 1) Preprocessing & YOLO Inference
         # --------------------------------------
+        current_video_id = Path(path).stem
+
+        # If we're starting a new video, reset all state variables
+        if prev_video_id is not None and current_video_id != prev_video_id:
+            frames_buffer.clear()  # Clear the frame buffer
+            skip_counter = 0       # Reset the skip counter
+            clip_index = 0         # Reset the clip index
+            speed_dict = {}        # Clear speed data
+            LOGGER.info(f"New video detected ({current_video_id}). State reset.")
+        
+        # Update the tracker for the next iteration
+        prev_video_id = current_video_id
+
         with dt[0]:
             im = torch.from_numpy(im).to(model.device)
             im = im.half() if model.fp16 else im.float()
@@ -313,6 +321,8 @@ def infer_on_dataset(
                     for old_frame in frames_buffer:
                         writer.write(old_frame)
 
+                    speed_dict[clip_path] = 0.0  # placeholder for speed data
+
                     # (b) Since frames_buffer already appended the current frame,
                     #     we do NOT need to write it again. The current frame is
                     #     the last item in frames_buffer. If you prefer to add it
@@ -344,7 +354,7 @@ def infer_on_dataset(
 
         LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
 
-    return seen, windows, dt
+    return seen, windows, dt, speed_dict
 
 
 def process_single_detection(
@@ -653,6 +663,7 @@ def run(
     goal_image_coordinate,       # list of 4 points [[x,y], [x,y], [x,y], [x,y]]
     goal_realworld_size,         # output width x height
     draw_bbox,
+    radar_data,
 ):
     """
     Main detection + pose estimation pipeline.
@@ -685,7 +696,7 @@ def run(
     warmup_yolo_model(model, pt, bs, imgsz)
 
     # --- 6) Inference over dataset (main loop) ---
-    seen, windows, dt = infer_on_dataset(
+    seen, windows, dt, speed_dict = infer_on_dataset(
         dataset, 
         model,
         names,
@@ -724,6 +735,10 @@ def run(
         weights
     )
 
+    print(speed_dict)
+
+
+
 
 
 def parse_opt():
@@ -759,6 +774,7 @@ def parse_opt():
     parser.add_argument('--goal_image_coordinate', nargs='*' ,type=int, default=None, help='four points(x1,y1,...,x4,y4) for perspective transform')
     parser.add_argument('--goal_realworld_size', nargs='*' ,type=int, default=[2100, 700], help='output width x height')
     parser.add_argument('--draw-bbox', action='store_true', help='draw bounding boxes')
+    parser.add_argument('--radar_data', type=str, default=None, help='radar data path')
 
     opt = parser.parse_args()
 
@@ -787,7 +803,7 @@ if __name__ == "__main__":
     main(opt)
 
 # sample usage
-# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/param2/8-1.mp4" --name 'test_goal' --goal_image_coordinate 99 201 1822 221 1813 793 86 771  --goal_realworld_size 2100 700 --nosave
+# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/param2/orginal.mp4" --name 'test_goal' --goal_image_coordinate 99 201 1822 221 1813 793 86 771  --goal_realworld_size 2100 700 --nosave
 
 # python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/param1/10-1.mp4" --name 'test_goal' --goal_image_coordinate 178 173 1730 139 1712 746 227 777  --goal_realworld_size 2100 700 --nosave
 
