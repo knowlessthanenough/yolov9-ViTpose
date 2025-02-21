@@ -63,7 +63,7 @@ def get_video_fps(metadata):
     return None
 
 
-def get_frame_timestamp(video_path, frame_number):
+def get_frame_timestamp(video_path, frame_number, utc_offset=0):
     """ Compute real timestamp for a given frame """
     metadata = get_mediainfo_datetime(video_path)
 
@@ -82,12 +82,15 @@ def get_frame_timestamp(video_path, frame_number):
         return None
 
     frame_time = timedelta(seconds=(frame_number / fps))
-    return start_time + frame_time
+    adjusted_time = start_time + frame_time + timedelta(hours=utc_offset)
+    return adjusted_time
 
 # Example Usage
 video_file = "./data/video/GX040011.mp4"
 frame_num = 10000  # Replace with desired frame number
-real_timestamp = get_frame_timestamp(video_file, frame_num)
+utc_offset = 8  # Example: UTC+8 timezon
+
+real_timestamp = get_frame_timestamp(video_file, frame_num, utc_offset)
 
 if real_timestamp:
     print(f"🕒 Frame {frame_num} was recorded at: {real_timestamp}")

@@ -158,11 +158,25 @@ def infer_on_dataset(
     clip_index = 0                   # to name each saved clip uniquely
     fps = 30                         # (optional) frames per second for each clip
     speed_dict = {}                  # store speed data for each clip
+    prev_video_id = None  # Track the previous video's identifier
 
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         # --------------------------------------
         # 1) Preprocessing & YOLO Inference
         # --------------------------------------
+        current_video_id = Path(path).stem
+
+        # If we're starting a new video, reset all state variables
+        if prev_video_id is not None and current_video_id != prev_video_id:
+            frames_buffer.clear()  # Clear the frame buffer
+            skip_counter = 0       # Reset the skip counter
+            clip_index = 0         # Reset the clip index
+            speed_dict = {}        # Clear speed data
+            LOGGER.info(f"New video detected ({current_video_id}). State reset.")
+        
+        # Update the tracker for the next iteration
+        prev_video_id = current_video_id
+
         with dt[0]:
             im = torch.from_numpy(im).to(model.device)
             im = im.half() if model.fp16 else im.float()
@@ -307,7 +321,7 @@ def infer_on_dataset(
                     for old_frame in frames_buffer:
                         writer.write(old_frame)
 
-                    speed_dict[clip_name] = 0.0  # placeholder for speed data
+                    speed_dict[clip_path] = 0.0  # placeholder for speed data
 
                     # (b) Since frames_buffer already appended the current frame,
                     #     we do NOT need to write it again. The current frame is
@@ -789,7 +803,7 @@ if __name__ == "__main__":
     main(opt)
 
 # sample usage
-# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/param2/8-1.mp4" --name 'test_goal' --goal_image_coordinate 99 201 1822 221 1813 793 86 771  --goal_realworld_size 2100 700 --nosave
+# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/param2/orginal.mp4" --name 'test_goal' --goal_image_coordinate 99 201 1822 221 1813 793 86 771  --goal_realworld_size 2100 700 --nosave
 
 # python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/param1/10-1.mp4" --name 'test_goal' --goal_image_coordinate 178 173 1730 139 1712 746 227 777  --goal_realworld_size 2100 700 --nosave
 
