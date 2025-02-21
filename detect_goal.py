@@ -649,6 +649,7 @@ def run(
     goal_image_coordinate,       # list of 4 points [[x,y], [x,y], [x,y], [x,y]]
     goal_realworld_size,         # output width x height
     draw_bbox,
+    radar_data,
 ):
     """
     Main detection + pose estimation pipeline.
