@@ -1,3 +1,5 @@
+# TODO: add function to extract the goal speed from the excel using the realtime timestamp
+
 import argparse
 import os
 import platform
@@ -9,6 +11,7 @@ import onepose
 from idenfity_goalkeeper import extract_color_histogram_with_specific_background_color, extract_color_histogram_from_rotated_skelton, compare_histograms, load_histogram
 from goalkeeper_motion_classification import classify_goalkeeper_behavior
 from collections import deque
+from extract_datetime import get_video_start_time_and_fps, calculate_real_timestamp
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLO root directory
@@ -148,6 +151,8 @@ def infer_on_dataset(
     view_img,
     save_dir,
     draw_bbox,
+    radar_data,
+    utc_offset,
 ):
     vid_path, vid_writer = [None] * 1, [None] * 1
     seen, windows = 0, []
@@ -159,6 +164,9 @@ def infer_on_dataset(
     fps = 30                         # (optional) frames per second for each clip
     speed_dict = {}                  # store speed data for each clip
     prev_video_id = None  # Track the previous video's identifier
+    video_start_time = None
+    video_fps = fps
+    video_start_frame_idx = 0
 
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         # --------------------------------------
@@ -170,10 +178,11 @@ def infer_on_dataset(
         if prev_video_id is not None and current_video_id != prev_video_id:
             frames_buffer.clear()  # Clear the frame buffer
             skip_counter = 0       # Reset the skip counter
-            clip_index = 0         # Reset the clip index
-            speed_dict = {}        # Clear speed data
             LOGGER.info(f"New video detected ({current_video_id}). State reset.")
         
+            video_start_frame_idx = frame_idx
+            video_start_time, video_fps = get_video_start_time_and_fps(path)
+
         # Update the tracker for the next iteration
         prev_video_id = current_video_id
 
@@ -330,6 +339,20 @@ def infer_on_dataset(
 
                     writer.release()
                     LOGGER.info(f"Saved new clip => {clip_path} (last 60 frames + current)")
+
+                    # **Compute real timestamp** of this trigger
+                    trigger_time = calculate_real_timestamp(
+                        video_start_time,
+                        video_start_frame_idx,
+                        frame_idx,
+                        video_fps,
+                        utc_offset
+                    )
+
+                    if trigger_time:
+                        LOGGER.info(f"Trigger time (real-world): {trigger_time.isoformat()}")
+                    else:
+                        LOGGER.info("Trigger time could not be determined (missing metadata).")
 
                     # 5) Set skip counter => ignore triggers for next 900 frames
                     skip_counter = 900
@@ -664,15 +687,8 @@ def run(
     goal_realworld_size,         # output width x height
     draw_bbox,
     radar_data,
+    utc_offset,
 ):
-    """
-    Main detection + pose estimation pipeline.
-
-    If perspective_matrix is provided (via goal_image_coordinate),
-    we will warp the entire image and bounding-box coordinates,
-    then display/save the warped image + warped coords.
-    Otherwise, fallback to the original image as usual.
-    """
 
     # --- 1) Prepare perspective transform if needed ---
     perspective_matrix = prepare_perspective(
@@ -721,6 +737,8 @@ def run(
         view_img,
         save_dir,
         draw_bbox,
+        radar_data,
+        utc_offset
     )
 
     # --- 8) Summaries & Cleanup ---
@@ -736,9 +754,6 @@ def run(
     )
 
     print(speed_dict)
-
-
-
 
 
 def parse_opt():
@@ -775,6 +790,7 @@ def parse_opt():
     parser.add_argument('--goal_realworld_size', nargs='*' ,type=int, default=[2100, 700], help='output width x height')
     parser.add_argument('--draw-bbox', action='store_true', help='draw bounding boxes')
     parser.add_argument('--radar_data', type=str, default=None, help='radar data path')
+    parser.add_argument('--utc_offset', type=int, default=8, help='UTC offset in hours')
 
     opt = parser.parse_args()
 
