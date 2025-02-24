@@ -162,7 +162,7 @@ def infer_on_dataset(
     skip_counter = 0                 # if > 0, skip checking “big ball” triggers
     clip_index = 0                   # to name each saved clip uniquely
     fps = 30                         # (optional) frames per second for each clip
-    speed_dict = {}                  # store speed data for each clip
+    collection_of_speed_dict = []                  # store speed data, video time, real time for each clip
     prev_video_id = None  # Track the previous video's identifier
     video_start_time = None
     video_fps = fps
@@ -330,7 +330,11 @@ def infer_on_dataset(
                     for old_frame in frames_buffer:
                         writer.write(old_frame)
 
-                    speed_dict[clip_path] = 0.0  # placeholder for speed data
+                    clip_path_dict = {}
+                    clip_path_dict['clip_path'] = clip_path
+                    clip_path_dict['speed'] = 0.0  # placeholder for speed data
+                    clip_path_dict['video_time'] = None# video time in minutes and seconds
+                    clip_path_dict['real_time'] = None  # real-world timestamp
 
                     # (b) Since frames_buffer already appended the current frame,
                     #     we do NOT need to write it again. The current frame is
@@ -349,10 +353,16 @@ def infer_on_dataset(
                         utc_offset
                     )
 
+                    # Store the clip path and timestamp
+                    clip_path_dict['speed'] = 10 #dummy speed
+                    clip_path_dict['video_time'] = frame_idx //video_fps
+                    collection_of_speed_dict.append(clip_path_dict)
+
                     if trigger_time:
+                        clip_path_dict['real_time'] = trigger_time.isoformat()
                         LOGGER.info(f"Trigger time (real-world): {trigger_time.isoformat()}")
                     else:
-                        LOGGER.info("Trigger time could not be determined (missing metadata).")
+                        LOGGER.info("Trigger time (real-world) could not be determined (missing metadata).")
 
                     # 5) Set skip counter => ignore triggers for next 900 frames
                     skip_counter = 900
@@ -377,7 +387,7 @@ def infer_on_dataset(
 
         LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
 
-    return seen, windows, dt, speed_dict
+    return seen, windows, dt, collection_of_speed_dict
 
 
 def process_single_detection(
@@ -712,7 +722,7 @@ def run(
     warmup_yolo_model(model, pt, bs, imgsz)
 
     # --- 6) Inference over dataset (main loop) ---
-    seen, windows, dt, speed_dict = infer_on_dataset(
+    seen, windows, dt, collection_of_speed_dict = infer_on_dataset(
         dataset, 
         model,
         names,
@@ -753,7 +763,7 @@ def run(
         weights
     )
 
-    print(speed_dict)
+    print(collection_of_speed_dict)
 
 
 def parse_opt():
