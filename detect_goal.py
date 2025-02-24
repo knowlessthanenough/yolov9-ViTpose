@@ -152,7 +152,6 @@ def infer_on_dataset(
     save_dir,
     draw_bbox,
     radar_data,
-    utc_offset,
 ):
     vid_path, vid_writer = [None] * 1, [None] * 1
     seen, windows = 0, []
@@ -345,22 +344,21 @@ def infer_on_dataset(
                     LOGGER.info(f"Saved new clip => {clip_path} (last 60 frames + current)")
 
                     # **Compute real timestamp** of this trigger
-                    trigger_time = calculate_real_timestamp(
+                    trigger_time, video_time = calculate_real_timestamp(
                         video_start_time,
                         video_start_frame_idx,
                         frame_idx,
                         video_fps,
-                        utc_offset
                     )
 
                     # Store the clip path and timestamp
                     clip_path_dict['speed'] = 10 #dummy speed
-                    clip_path_dict['video_time'] = frame_idx //video_fps
+                    clip_path_dict['video_time'] = video_time
                     collection_of_speed_dict.append(clip_path_dict)
 
                     if trigger_time:
-                        clip_path_dict['real_time'] = trigger_time.isoformat()
-                        LOGGER.info(f"Trigger time (real-world): {trigger_time.isoformat()}")
+                        clip_path_dict['real_time'] = trigger_time
+                        LOGGER.info(f"Trigger time (real-world): {trigger_time}")
                     else:
                         LOGGER.info("Trigger time (real-world) could not be determined (missing metadata).")
 
@@ -697,7 +695,6 @@ def run(
     goal_realworld_size,         # output width x height
     draw_bbox,
     radar_data,
-    utc_offset,
 ):
 
     # --- 1) Prepare perspective transform if needed ---
@@ -748,7 +745,6 @@ def run(
         save_dir,
         draw_bbox,
         radar_data,
-        utc_offset
     )
 
     # --- 8) Summaries & Cleanup ---
@@ -800,7 +796,6 @@ def parse_opt():
     parser.add_argument('--goal_realworld_size', nargs='*' ,type=int, default=[2100, 700], help='output width x height')
     parser.add_argument('--draw-bbox', action='store_true', help='draw bounding boxes')
     parser.add_argument('--radar_data', type=str, default=None, help='radar data path')
-    parser.add_argument('--utc_offset', type=int, default=8, help='UTC offset in hours')
 
     opt = parser.parse_args()
 

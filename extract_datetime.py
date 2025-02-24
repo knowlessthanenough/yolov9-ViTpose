@@ -49,25 +49,22 @@ def get_video_start_time_and_fps(video_path):
 
     return start_time, fps
 
-def calculate_real_timestamp(video_start_time, base_frame_idx, current_frame_idx, fps, utc_offset):
+def calculate_real_timestamp(video_start_time, base_frame_idx, current_frame_idx, fps):
     """
     Convert the current frame index into a real-world timestamp, considering the UTC offset.
     """
     if not video_start_time or not fps:
-        return None
+        return None, None
 
     # Convert from global frame index to local frame index for this video
     local_frame_idx = current_frame_idx - base_frame_idx
     elapsed_seconds = local_frame_idx / fps
 
-    # Apply elapsed time
+    # Apply elapsed time (in unix time) to the video start time
     real_time_utc = video_start_time + timedelta(seconds=elapsed_seconds)
 
-    # Convert to local timezone
-    local_timezone = timezone(timedelta(hours=utc_offset))
-    real_time_local = real_time_utc.astimezone(local_timezone)
 
-    return real_time_local
+    return real_time_utc.timestamp(), elapsed_seconds
 
 
 if __name__ == "__main__":
