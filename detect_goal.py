@@ -12,6 +12,8 @@ from idenfity_goalkeeper import extract_color_histogram_with_specific_background
 from goalkeeper_motion_classification import classify_goalkeeper_behavior
 from collections import deque
 from extract_datetime import get_video_start_time_and_fps, calculate_real_timestamp
+from extract_speed_data import find_max_speed_in_range
+from tqdm import tqdm
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLO root directory
@@ -151,7 +153,7 @@ def infer_on_dataset(
     view_img,
     save_dir,
     draw_bbox,
-    radar_data,
+    radar_data_path,
 ):
     vid_path, vid_writer = [None] * 1, [None] * 1
     seen, windows = 0, []
@@ -167,6 +169,10 @@ def infer_on_dataset(
     video_fps = fps
     video_start_frame_idx = 0
 
+    # If 'dataset' supports len(), use it for total frames. Otherwise set a fixed total or remove total=...
+    total_frames = len(dataset) if hasattr(dataset, '__len__') else None
+    pbar = tqdm(total=total_frames, desc="Infer on dataset") if total_frames else None
+
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         # --------------------------------------
         # 1) Preprocessing & YOLO Inference
@@ -180,7 +186,7 @@ def infer_on_dataset(
             LOGGER.info(f"New video detected ({current_video_id}). State reset.")
         
             video_start_frame_idx = frame_idx
-            video_start_time, video_fps = get_video_start_time_and_fps(path)
+
 
         # Update the tracker for the next iteration
         prev_video_id = current_video_id
@@ -301,12 +307,12 @@ def infer_on_dataset(
                         cx = (wx1 + wx2) / 2.0
                         cy = (wy1 + wy2) / 2.0
                         
-                        # 1) Check if center is inside warped image
-                        if 0 <= cx < im0_w and 0 <= cy < im0_h:
-                            # 2) Check if w >= 75 OR h >= 75
-                            if w >= 75 or h >= 75:
-                                triggered = True
-                                break
+                        # # 1) Check if center is inside warped image
+                        # if 0 <= cx < im0_w and 0 <= cy < im0_h:
+                            # 2) Check if w >= 75 AND h >= 75
+                        if w >= 70 and h >= 70:
+                            triggered = True
+                            break
 
                 # 4) If triggered => save a new short clip
                 if triggered:
@@ -329,11 +335,12 @@ def infer_on_dataset(
                     for old_frame in frames_buffer:
                         writer.write(old_frame)
 
-                    clip_path_dict = {}
-                    clip_path_dict['clip_path'] = clip_path
-                    clip_path_dict['speed'] = 0.0  # placeholder for speed data
-                    clip_path_dict['video_time'] = None# video time in minutes and seconds
-                    clip_path_dict['real_time'] = None  # real-world timestamp
+                    clip_path_dict = {
+                        'clip_path': clip_path,
+                        'speed': 0.0,
+                        'video_time': None,
+                        'real_time': None
+                    }
 
                     # (b) Since frames_buffer already appended the current frame,
                     #     we do NOT need to write it again. The current frame is
@@ -342,7 +349,8 @@ def infer_on_dataset(
 
                     writer.release()
                     LOGGER.info(f"Saved new clip => {clip_path} (last 60 frames + current)")
-
+                    video_start_time, video_fps = get_video_start_time_and_fps(path)
+                    print(video_start_time, video_start_frame_idx, frame_idx, video_fps)
                     # **Compute real timestamp** of this trigger
                     trigger_time, video_time = calculate_real_timestamp(
                         video_start_time,
@@ -351,10 +359,16 @@ def infer_on_dataset(
                         video_fps,
                     )
 
+                    speed = find_max_speed_in_range(
+                        radar_data_path,
+                        trigger_time,
+                        time_buffer=60,
+                        csv_utc_offset=8
+                    )
+
                     # Store the clip path and timestamp
-                    clip_path_dict['speed'] = 10 #dummy speed
+                    clip_path_dict['speed'] = speed #dummy speed
                     clip_path_dict['video_time'] = video_time
-                    collection_of_speed_dict.append(clip_path_dict)
 
                     if trigger_time:
                         clip_path_dict['real_time'] = trigger_time
@@ -362,6 +376,7 @@ def infer_on_dataset(
                     else:
                         LOGGER.info("Trigger time (real-world) could not be determined (missing metadata).")
 
+                    collection_of_speed_dict.append(clip_path_dict)
                     # 5) Set skip counter => ignore triggers for next 900 frames
                     skip_counter = 900
 
@@ -383,7 +398,16 @@ def infer_on_dataset(
                     vid_writer
                 )
 
-        LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
+        # LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
+        if pbar:
+            pbar.set_postfix_str(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
+            pbar.update(1)
+        else:
+            # Fallback if dataset has no length or if you still want logs:
+            LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
+
+    if pbar:
+        pbar.close()
 
     return seen, windows, dt, collection_of_speed_dict
 
@@ -694,7 +718,7 @@ def run(
     goal_image_coordinate,       # list of 4 points [[x,y], [x,y], [x,y], [x,y]]
     goal_realworld_size,         # output width x height
     draw_bbox,
-    radar_data,
+    radar_data_path,
 ):
 
     # --- 1) Prepare perspective transform if needed ---
@@ -744,7 +768,7 @@ def run(
         view_img,
         save_dir,
         draw_bbox,
-        radar_data,
+        radar_data_path,
     )
 
     # --- 8) Summaries & Cleanup ---
@@ -795,7 +819,7 @@ def parse_opt():
     parser.add_argument('--goal_image_coordinate', nargs='*' ,type=int, default=None, help='four points(x1,y1,...,x4,y4) for perspective transform')
     parser.add_argument('--goal_realworld_size', nargs='*' ,type=int, default=[2100, 700], help='output width x height')
     parser.add_argument('--draw-bbox', action='store_true', help='draw bounding boxes')
-    parser.add_argument('--radar_data', type=str, default=None, help='radar data path')
+    parser.add_argument('--radar_data_path', type=str, default=None, help='radar data path csv file')
 
     opt = parser.parse_args()
 
