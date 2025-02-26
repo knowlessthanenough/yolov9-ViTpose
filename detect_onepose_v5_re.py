@@ -8,6 +8,7 @@ import numpy as np
 import onepose
 from idenfity_goalkeeper import extract_color_histogram_with_specific_background_color, extract_color_histogram_from_rotated_skelton, compare_histograms, load_histogram
 from goalkeeper_motion_classification import classify_goalkeeper_behavior
+from tqdm import tqdm
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLO root directory
@@ -120,7 +121,8 @@ def infer_on_dataset(
     movement_threshold,
     speed_threshold,
     jump_threshold,
-    elbow_angle_threshold
+    elbow_angle_threshold,
+    use_tqdm,
 ):
     vid_path, vid_writer = [None] * 1, [None] * 1
     seen, windows = 0, []
@@ -130,6 +132,15 @@ def infer_on_dataset(
     current_video_detections = []  # To store detections for the current video
     current_video_path = None  # Track which video we are processing
     
+
+    # If 'dataset' supports len(), use it for total frames. Otherwise set a fixed total or remove total=...
+    total_frames = len(dataset) if hasattr(dataset, '__len__') else None
+
+    if use_tqdm:
+        pbar = tqdm(total=total_frames, desc="Infer on dataset") if total_frames else None
+    else:
+        pbar = None
+
     for path, im, im0s, vid_cap, s in dataset:
         # Detect video change
         if current_video_path is None or current_video_path != path:
@@ -271,7 +282,16 @@ def infer_on_dataset(
                     vid_writer
                 )
 
-        LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
+        if pbar:
+            pbar.set_postfix_str(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
+            pbar.update(1)
+            # tqdm.write(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")  # Ensures logging does not break tqdm
+        else:
+            LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
+
+
+    if pbar:
+        pbar.close()
 
     # After processing all videos, append the last video's detections
     if current_video_detections:
@@ -569,7 +589,7 @@ def handle_save_results(
             if not vid_writer[i].isOpened():
                 print(f"Error: Failed to initialize video writer for {save_path}")
 
-            print(f"Writing frame {i} to video: {save_path}")
+            # print(f"Writing frame {i} to video: {save_path}")
             vid_writer[i].write(im0_warped_final)
 
 
@@ -638,6 +658,7 @@ def run(
     speed_threshold,
     jump_threshold,
     elbow_angle_threshold,
+    use_tqdm
 ):
     """
     Main detection + pose estimation pipeline.
@@ -699,7 +720,8 @@ def run(
         movement_threshold,
         speed_threshold,
         jump_threshold,
-        elbow_angle_threshold
+        elbow_angle_threshold,
+        use_tqdm,
     )
 
     # --- 7) Summaries & Cleanup ---
@@ -754,6 +776,7 @@ def parse_opt():
     parser.add_argument('--speed_threshold', type=float, default=50, help='speed threshold')
     parser.add_argument('--jump_threshold', type=float, default=100, help='jump threshold')
     parser.add_argument('--elbow_angle_threshold', type=float, default=160, help='elbow angle threshold')
+    parser.add_argument('--use-tqdm', action='store_true', help='use tqdm for progress bar')
     opt = parser.parse_args()
 
     # Convert flat list to nested list of coordinates
