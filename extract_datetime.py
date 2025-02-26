@@ -71,13 +71,15 @@ if __name__ == "__main__":
     # Example Usage
     video_file = "./data/video/GX040011.mp4"
     frame_num = 10000  # Replace with desired frame number
-    utc_offset = 8  # Example: UTC+8 timezone
 
     # Unpack the tuple returned by get_video_start_time_and_fps
     video_start_time, fps = get_video_start_time_and_fps(video_file)
+    print(f"Video start time : {video_start_time}")
+    print(f"FPS : {fps}")
 
     if video_start_time and fps:
-        real_time = calculate_real_timestamp(video_start_time, 0, frame_num, fps, utc_offset)
-        print(f"Frame real time (UTC+{utc_offset}): {real_time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
+        real_time, video_time = calculate_real_timestamp(video_start_time, 0, frame_num, fps)
+        print(f"Frame real time : {real_time}")
+        print(f"Frame video time : {video_time}")
     else:
         print("Failed to get video start time or FPS.")
