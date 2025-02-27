@@ -1,6 +1,4 @@
 # docker-compose.yml
-version: "3.8"
-
 services:
   yolov9:
     build:
@@ -9,7 +7,7 @@ services:
     container_name: yolov9
     restart: unless-stopped
     runtime: nvidia  # Use NVIDIA runtime for GPU support
-    shm_size: '32g'  # Set shared memory size to 64GB
+    shm_size: '24g'  # Set shared memory size to 64GB
     environment:
       - NVIDIA_VISIBLE_DEVICES=all  # Make all GPUs visible to the container
       - DISPLAY=${DISPLAY}
@@ -18,10 +16,12 @@ services:
     devices:
       - "/dev/ttyS3:/dev/ttyS3"  # Map the host COM port to the container (adjust ttyS3 as needed)
     volumes:
-      - ./dataset/:/coco/  # Mount the local COCO dataset path
+      # - ./dataset/:/coco/  # Mount the local COCO dataset path
       - ./:/yolov9  # Mount the local code directory
-      - /tmp/.X11-unix:/tmp/.X11-unix  # Mount the X11 socket for GUI
+      # - /tmp/.X11-unix:/tmp/.X11-unix  # Mount the X11 socket for GUI
       - ./onepose_weights:/opt/conda/lib/python3.8/site-packages/onepose/models/weights
+      - ./weight:/yolov9/weight
+      - /home/hkuit/git/hkuit-analysis-api/media:/yolov9/media
     working_dir: /yolov9  # Set working directory inside container
     stdin_open: true  # Equivalent to `-i` to keep STDIN open
     tty: true  # Allocate a pseudo-TTY

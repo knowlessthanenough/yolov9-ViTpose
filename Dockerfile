@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y \
     software-properties-common \
     x11-apps \
     mesa-utils \
+    mediainfo \
     && apt-get clean && rm -rf /var/lib/apt/lists/* 
 
 RUN add-apt-repository universe && apt-get update
@@ -41,13 +42,13 @@ RUN add-apt-repository universe && apt-get update
 # Remove existing cv2 if it's installed from another source
 RUN rm -rf /opt/conda/lib/python3.8/site-packages/cv2
 
-RUN pip3 install shapely
+RUN pip install shapely
 
 # Reinstall OpenCV via pip
 RUN pip3 install opencv-python seaborn \
     && pip3 install git+https://github.com/developer0hye/onepose.git
 
-
+COPY . .
 
 # You could also add your own script to install other Python packages
 # Example (optional): Copy requirements.txt and install Python packages

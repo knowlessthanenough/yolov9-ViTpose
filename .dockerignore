@@ -7,3 +7,6 @@ runs/*
 
 onepose_weights/*
 media/*
+
+Dockerfile
+docker-compose.yml
