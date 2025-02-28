@@ -1,0 +1,29 @@
+# docker-compose.yml
+services:
+  yolov9:
+    image: yolov9-vitpose-yolov9:latest
+    container_name: yolov9
+    restart: unless-stopped
+    runtime: nvidia  # Use NVIDIA runtime for GPU support
+    shm_size: '30g'  # Set shared memory size to 64GB
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all  # Make all GPUs visible to the container
+      - DISPLAY=0
+      - QT_QPA_PLATFORM_PLUGIN_PATH=/opt/conda/lib/python3.8/site-packages/cv2/qt/plugins
+      - QT_QPA_PLATFORM=xcb
+    devices:
+      - "/dev/ttyS3:/dev/ttyS3"  # Map the host COM port to the container (adjust ttyS3 as needed)
+    volumes:
+      - ./onepose_weights:/opt/conda/lib/python3.8/site-packages/onepose/models/weights
+      - ./weight:/yolov9/weight
+      - ../media:/yolov9/media
+    working_dir: /yolov9  # Set working directory inside container
+    stdin_open: true  # Equivalent to `-i` to keep STDIN open
+    tty: true  # Allocate a pseudo-TTY
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']  # Matches your GPU
+              capabilities: [gpu]

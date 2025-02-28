@@ -9,4 +9,4 @@ onepose_weights/*
 media/*
 
 Dockerfile
-docker-compose.yml
+docker-compose*.yml
