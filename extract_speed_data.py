@@ -5,12 +5,10 @@ def parse_datetime(date_str, time_str):
     """
     Parses different date and time formats.
     Supports:
-    - 12-hour format with AM/PM (e.g., '3:39:02 PM')
     - 24-hour format (e.g., '17:40:09')
     """
     formats = [
-        "%d/%m/%Y %I:%M:%S %p",  # 12-hour format
-        "%d/%m/%Y %H:%M:%S"      # 24-hour format
+        "%Y-%m-%d %H:%M:%S"      # 24-hour format ISO standard
     ]
     
     for fmt in formats:

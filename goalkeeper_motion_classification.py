@@ -17,10 +17,10 @@ def classify_goalkeeper_behavior(
 
     Classifies goalkeeper behavior for three cases:
     - Class 0 : No any bellow class detected.
-    - Class 2: Ball is far from skeleton, and goalkeeper's movement is limited.
+    - Class 1 & 2: Ball is far from skeleton, and goalkeeper's movement is limited.
     - Class 3: Goalkeeper's last 5-frame average center is farther from the ball than the first 5-frame average center.
-    - Class 4: Ball above the skeleton nose point but low or not jump to catch the ball.
-    - Class 5: Ball above the skeleton nose point but low or not elbow to catch the ball.
+    - Class 4: Ball above the skeleton ear point but low or not jump to catch the ball.
+    - Class 5: Ball above the skeleton ear point but low or not raise elbow above ear to catch the ball.
     - Class 6: Elbow angle is below the threshold (degrees) when the ball is in the shoulder-centered area.
     - Class 7: Elbow angle is decreasing over time when the ball is in the shoulder-centered area.
     - Class 8: Ball speed is below the threshold (km/h).
@@ -42,7 +42,7 @@ def classify_goalkeeper_behavior(
     body_centers = []         # Tracks GK center over frames
     ball_centers = []         # Tracks ball center over frames
     closest_distances = []    # Min dist from ball to GK skeleton
-    nose_positions = []       # GK nose y-values
+    ear_positions = []       # GK ear y-values
     foot_positions = {"left": [], "right": []}
     elbow_positions_y = {"left": [], "right": []}
     elbow_angles = {"left": [], "right": []}
@@ -92,9 +92,8 @@ def classify_goalkeeper_behavior(
                 goalkeeper_skeleton[13], goalkeeper_skeleton[14],
                 goalkeeper_skeleton[15], goalkeeper_skeleton[16]
             ]
-            # Skip if any polygon point is None
-            if any(pt is None for pt in polygon_points):
-                raise ValueError("Incomplete polygon points.")
+            # use remaining points if some are missing
+            polygon_points = [pt for pt in polygon_points if pt is not None]
             polygon = Polygon(polygon_points)
             ball_point = Point(ball_center)
 
@@ -164,14 +163,16 @@ def classify_goalkeeper_behavior(
             except Exception:
                 pass
 
-        # Track foot, nose, and elbow y positions
+        # Track foot, ear, and elbow y positions
         if goalkeeper_skeleton[15] is not None:
             foot_positions["left"].append(goalkeeper_skeleton[15][1])
         if goalkeeper_skeleton[16] is not None:
             foot_positions["right"].append(goalkeeper_skeleton[16][1])
 
-        if goalkeeper_skeleton[0] is not None:
-            nose_positions.append(goalkeeper_skeleton[0][1])
+        if goalkeeper_skeleton[3] is not None:
+            ear_positions.append(goalkeeper_skeleton[3][1])
+        if goalkeeper_skeleton[4] is not None:
+            ear_positions.append(goalkeeper_skeleton[4][1])
 
         if goalkeeper_skeleton[7] is not None:
             elbow_positions_y["left"].append(goalkeeper_skeleton[7][1])
@@ -216,6 +217,7 @@ def classify_goalkeeper_behavior(
             if len(body_centers) > 1:
                 total_movement = np.linalg.norm(body_centers[0] - body_centers[-1])
                 if total_movement < movement_threshold:
+                    tags.add(1)
                     tags.add(2)
 
     # ------------------------
@@ -233,29 +235,29 @@ def classify_goalkeeper_behavior(
             tags.add(3)
 
     # ------------------------
-    # Case 4: Ball above nose + minimal foot jump
+    # Case 4: Ball above ear + minimal foot jump
     # ------------------------
-    # Only do this if we have at least one ball center & foot, nose data
-    if ball_centers and foot_positions["left"] and foot_positions["right"] and nose_positions:
+    # Only do this if we have at least one ball center & foot, ear data
+    if ball_centers and foot_positions["left"] and foot_positions["right"] and ear_positions:
         last_ball_center = ball_centers[-1]
         left_foot_move = max(foot_positions["left"]) - min(foot_positions["left"])
         right_foot_move = max(foot_positions["right"]) - min(foot_positions["right"])
         total_foot_move = left_foot_move + right_foot_move
-        avg_nose_height = np.mean(nose_positions)
+        avg_nose_height = np.mean(ear_positions)
 
         # If your coordinate system is top=0, smaller y means higher
-        # so "ball above nose" is ball_center[1] < nose_y
+        # so "ball above ear" is ball_center[1] < nose_y
         if total_foot_move < jump_threshold and last_ball_center[1] < avg_nose_height:
             tags.add(4)
 
     # ------------------------
-    # Case 5: Ball above nose + elbows not raised
+    # Case 5: Ball above ear + elbows not raised
     # ------------------------
-    if ball_centers and elbow_positions_y["left"] and elbow_positions_y["right"] and nose_positions:
+    if ball_centers and elbow_positions_y["left"] and elbow_positions_y["right"] and ear_positions:
         last_ball_center = ball_centers[-1]
         max_left_elbow = max(elbow_positions_y["left"])
         max_right_elbow = max(elbow_positions_y["right"])
-        avg_nose_height = np.mean(nose_positions)
+        avg_nose_height = np.mean(ear_positions)
 
         if last_ball_center[1] < avg_nose_height and (
            max_left_elbow < avg_nose_height or max_right_elbow < avg_nose_height):

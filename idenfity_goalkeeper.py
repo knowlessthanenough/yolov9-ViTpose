@@ -227,18 +227,11 @@ def main():
                         help="Path to the goalkeeper's clothes image.")
     parser.add_argument('--histogram_save_path', type=str,
                         help="Path to save the histogram file.")
-    parser.add_argument('--white_lower', type=int, nargs=3, default=[0, 0, 200],
-                        help="Lower HSV bound for white color range.")
-    parser.add_argument('--white_upper', type=int, nargs=3, default=[179, 30, 255],
-                        help="Upper HSV bound for white color range.")
     parser.add_argument('--bins', type=int, nargs=3, default=[50, 60, 60],
                         help="Number of bins for H, S, and V channels.")
 
     args = parser.parse_args()
 
-    # Define the HSV range for white based on command-line args
-    white_range = (tuple(args.white_lower), tuple(args.white_upper))
-    
     # Load the image
     goalkeeper_clothe_image = cv2.imread(args.image)
     if goalkeeper_clothe_image is None:
@@ -246,7 +239,7 @@ def main():
         return
 
     # Extract histograms, ignoring white
-    goalkeeper_hist_from_image = extract_color_histogram_with_specific_background_color(goalkeeper_clothe_image, ignore_color_range=white_range)
+    goalkeeper_hist_from_image = extract_color_histogram_with_specific_background_color(goalkeeper_clothe_image)
     
     # Plot the histogram
     # plot_hsv_histogram(goalkeeper_hist_from_image, bins=tuple(args.bins))
