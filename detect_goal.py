@@ -1,5 +1,3 @@
-# TODO: add function to extract the goal speed from the excel using the realtime timestamp
-
 import argparse
 import os
 import platform

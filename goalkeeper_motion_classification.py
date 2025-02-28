@@ -1,3 +1,4 @@
+#TODO: behavior 6 7 still need to check
 from shapely.geometry import Point, Polygon
 import numpy as np
 
@@ -86,21 +87,18 @@ def classify_goalkeeper_behavior(
             continue
 
         # -------------- Case 10 --------------
-        try:
-            polygon_points = [
-                goalkeeper_skeleton[11], goalkeeper_skeleton[12],
-                goalkeeper_skeleton[13], goalkeeper_skeleton[14],
-                goalkeeper_skeleton[15], goalkeeper_skeleton[16]
-            ]
-            # use remaining points if some are missing
-            polygon_points = [pt for pt in polygon_points if pt is not None]
-            polygon = Polygon(polygon_points)
-            ball_point = Point(ball_center)
-
-            if polygon.is_valid and polygon.contains(ball_point):
-                tags.add(10)
-        except Exception:
-            pass
+        polygon_points = [
+            goalkeeper_skeleton[11], goalkeeper_skeleton[12],
+            goalkeeper_skeleton[14], goalkeeper_skeleton[16],
+            goalkeeper_skeleton[15], goalkeeper_skeleton[13]
+        ]
+        # if missing points skip this frame
+        if any(pt is None for pt in polygon_points):
+            continue
+        polygon = Polygon(polygon_points)
+        ball_point = Point(ball_center)
+        if polygon.is_valid and polygon.contains(ball_point):
+            tags.add(10)
 
         # -------------- Cases 6,7,9 --------------
         left_shoulder = goalkeeper_skeleton[5]
