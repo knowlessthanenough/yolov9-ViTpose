@@ -9,8 +9,7 @@ def parse_datetime(date_str, time_str):
     - 24-hour format (e.g., '17:40:09')
     """
     formats = [
-        "%d/%m/%Y %I:%M:%S %p",  # 12-hour format
-        "%d/%m/%Y %H:%M:%S"      # 24-hour format
+        "%Y-%m-%d %H:%M:%S"      # 24-hour format
     ]
     
     for fmt in formats:

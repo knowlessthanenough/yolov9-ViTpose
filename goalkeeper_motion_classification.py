@@ -216,6 +216,7 @@ def classify_goalkeeper_behavior(
             if len(body_centers) > 1:
                 total_movement = np.linalg.norm(body_centers[0] - body_centers[-1])
                 if total_movement < movement_threshold:
+                    tags.add(1)
                     tags.add(2)
 
     # ------------------------
