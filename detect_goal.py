@@ -154,6 +154,7 @@ def infer_on_dataset(
     save_dir,
     draw_bbox,
     radar_data_path,
+    use_tqdm
 ):
     vid_path, vid_writer = [None] * 1, [None] * 1
     seen, windows = 0, []
@@ -171,7 +172,11 @@ def infer_on_dataset(
 
     # If 'dataset' supports len(), use it for total frames. Otherwise set a fixed total or remove total=...
     total_frames = len(dataset) if hasattr(dataset, '__len__') else None
-    pbar = tqdm(total=total_frames, desc="Infer on dataset") if total_frames else None
+
+    if use_tqdm:
+        pbar = tqdm(total=total_frames, desc="Infer on dataset") if total_frames else None
+    else:
+        pbar = None
 
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         # --------------------------------------
@@ -719,6 +724,7 @@ def run(
     goal_realworld_size,         # output width x height
     draw_bbox,
     radar_data_path,
+    use_tqdm,
 ):
 
     # --- 1) Prepare perspective transform if needed ---
@@ -769,6 +775,7 @@ def run(
         save_dir,
         draw_bbox,
         radar_data_path,
+        use_tqdm,
     )
 
     # --- 8) Summaries & Cleanup ---
@@ -820,6 +827,7 @@ def parse_opt():
     parser.add_argument('--goal_realworld_size', nargs='*' ,type=int, default=[2100, 700], help='output width x height')
     parser.add_argument('--draw-bbox', action='store_true', help='draw bounding boxes')
     parser.add_argument('--radar_data_path', type=str, default=None, help='radar data path csv file')
+    parser.add_argument('--use-tqdm', action='store_true', help='use tqdm for progress bar')
 
     opt = parser.parse_args()
 

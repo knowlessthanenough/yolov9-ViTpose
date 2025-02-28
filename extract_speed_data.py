@@ -1,6 +1,25 @@
 import csv
 from datetime import datetime, timedelta, timezone
 
+def parse_datetime(date_str, time_str):
+    """
+    Parses different date and time formats.
+    Supports:
+    - 12-hour format with AM/PM (e.g., '3:39:02 PM')
+    - 24-hour format (e.g., '17:40:09')
+    """
+    formats = [
+        "%d/%m/%Y %I:%M:%S %p",  # 12-hour format
+        "%d/%m/%Y %H:%M:%S"      # 24-hour format
+    ]
+    
+    for fmt in formats:
+        try:
+            return datetime.strptime(f"{date_str} {time_str}", fmt)
+        except ValueError:
+            continue
+    return None  # Return None if no format matches
+
 def find_max_speed_in_range(csv_file_path, reference_timestamp, time_buffer=60, csv_utc_offset=8):
     """
     Finds all speed data within ±time_buffer seconds of reference_timestamp (Unix time)
@@ -33,10 +52,10 @@ def find_max_speed_in_range(csv_file_path, reference_timestamp, time_buffer=60, 
             if not date_val or not time_val:
                 continue
 
-            date_time_str = f"{date_val} {time_val}"
-
-            # Parse using month/day/year + 12-hour time + AM/PM
-            row_dt_naive = datetime.strptime(date_time_str, '%d/%m/%Y %I:%M:%S %p')
+            # Parse the datetime
+            row_dt_naive = parse_datetime(date_val, time_val)
+            if row_dt_naive is None:
+                continue  # Skip if unable to parse
 
             # Attach the CSV's timezone
             row_dt = row_dt_naive.replace(tzinfo=csv_tz)
@@ -47,8 +66,15 @@ def find_max_speed_in_range(csv_file_path, reference_timestamp, time_buffer=60, 
             # Check if within ±time_buffer
             if abs(row_ts - ref_ts) <= time_buffer:
                 speed_str = row.get('Speed', '')
+                unit = row.get('Unit', '').strip().upper()  # Fetch unit and normalize case
+
                 if speed_str:
                     speed_val = float(speed_str)
+
+                    # Convert speed if unit is MPH
+                    if unit == "MPH":
+                        speed_val *= 1.60934  # Convert to KPH
+
                     if max_speed is None or speed_val > max_speed:
                         max_speed = speed_val
 
@@ -59,4 +85,4 @@ if __name__ == "__main__":
     csv_path = "./data/excel/PR_20250209_1537_0902_Jockey_Club.csv"
     ref_unix_ts = 1739086810  # Example
     result = find_max_speed_in_range(csv_path, ref_unix_ts, time_buffer=1000, csv_utc_offset=8)
-    print("Max speed:", result)
+    print("Max speed (KPH):", result)
