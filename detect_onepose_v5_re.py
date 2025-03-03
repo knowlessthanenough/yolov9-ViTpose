@@ -238,6 +238,7 @@ def infer_on_dataset(
                         best_score = detres['score']
                         best_idx = idx
 
+
                 # null out skeleton for all other persons
                 for idx, detres in enumerate(all_detections_for_frame):
                     if detres['cls'] == 0 and idx != best_idx:
@@ -378,19 +379,23 @@ def process_single_detection(
                     'left_hip': keypoints_dict['points'][11],
                     'right_hip': keypoints_dict['points'][12]
                 }
+                # if bbox is too small, skip
+                if (x2 - x1) * (y2 - y1) < 10000:
+                    return None
+                
+                else:
+                    # Extract colors from the person's torso
+                    skelton_colors_histogram = extract_color_histogram_from_rotated_skelton(
+                        im0s, keypoints
+                    )
 
-                # Extract colors from the person's torso
-                skelton_colors_histogram = extract_color_histogram_from_rotated_skelton(
-                    im0s, keypoints
-                )
-
-                # Compute match score
-                score_val = compare_histograms(
-                    clothes_colors_histogram,
-                    skelton_colors_histogram
-                )
-                # print(f"Color match score: {score_val}")
-                detection_result['score'] = score_val
+                    # Compute match score
+                    score_val = compare_histograms(
+                        clothes_colors_histogram,
+                        skelton_colors_histogram
+                    )
+                    # print(f"Color match score: {score_val}")
+                    detection_result['score'] = score_val
 
     return detection_result
 

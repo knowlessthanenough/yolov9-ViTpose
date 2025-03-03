@@ -1,3 +1,4 @@
+#TODO: behavior 6 7 still need to check
 from shapely.geometry import Point, Polygon
 import numpy as np
 
@@ -66,6 +67,7 @@ def classify_goalkeeper_behavior(
     for frame_idx, frame_detections in enumerate(all_frame_detections):
         ball_center = None
         goalkeeper_skeleton = None
+        ball_size = None
 
         # Identify ball & GK in this frame
         for detection in frame_detections:
@@ -76,6 +78,7 @@ def classify_goalkeeper_behavior(
                 seen_ball = True
                 wx1, wy1, wx2, wy2 = detection['bbox_warp']
                 ball_center = [(wx1 + wx2) / 2, (wy1 + wy2) / 2]
+                ball_size = (wx2 - wx1) * (wy2 - wy1)
 
             if detection['cls'] == 0 and detection['score'] > 0:  # Goalkeeper
                 seen_goalkeeper = True
@@ -86,21 +89,18 @@ def classify_goalkeeper_behavior(
             continue
 
         # -------------- Case 10 --------------
-        try:
-            polygon_points = [
-                goalkeeper_skeleton[11], goalkeeper_skeleton[12],
-                goalkeeper_skeleton[13], goalkeeper_skeleton[14],
-                goalkeeper_skeleton[15], goalkeeper_skeleton[16]
-            ]
-            # use remaining points if some are missing
-            polygon_points = [pt for pt in polygon_points if pt is not None]
-            polygon = Polygon(polygon_points)
-            ball_point = Point(ball_center)
-
-            if polygon.is_valid and polygon.contains(ball_point):
-                tags.add(10)
-        except Exception:
-            pass
+        polygon_points = [
+            goalkeeper_skeleton[11], goalkeeper_skeleton[12],
+            goalkeeper_skeleton[14], goalkeeper_skeleton[16],
+            goalkeeper_skeleton[15], goalkeeper_skeleton[13]
+        ]
+        # if missing points skip this frame
+        if any(pt is None for pt in polygon_points):
+            continue
+        polygon = Polygon(polygon_points)
+        ball_point = Point(ball_center)
+        if polygon.is_valid and polygon.contains(ball_point):
+            tags.add(10)
 
         # -------------- Cases 6,7,9 --------------
         left_shoulder = goalkeeper_skeleton[5]
@@ -120,7 +120,7 @@ def classify_goalkeeper_behavior(
 
                 ball_in_area = dist_left <= max_radius or dist_right <= max_radius
 
-                if ball_in_area:
+                if ball_in_area and ball_size > 3600: #60*60
                     # Case 9: ball speed < threshold
                     if ball_speed < speed_threshold:
                         tags.add(9)
