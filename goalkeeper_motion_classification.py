@@ -243,24 +243,28 @@ def classify_goalkeeper_behavior(
         left_foot_move = max(foot_positions["left"]) - min(foot_positions["left"])
         right_foot_move = max(foot_positions["right"]) - min(foot_positions["right"])
         total_foot_move = left_foot_move + right_foot_move
-        avg_nose_height = np.mean(ear_positions)
+        avg_ear_height = np.mean(ear_positions)
 
         # If your coordinate system is top=0, smaller y means higher
         # so "ball above ear" is ball_center[1] < nose_y
-        if total_foot_move < jump_threshold and last_ball_center[1] < avg_nose_height:
+        if total_foot_move < jump_threshold and last_ball_center[1] < avg_ear_height:
             tags.add(4)
 
     # ------------------------
     # Case 5: Ball above ear + elbows not raised
     # ------------------------
-    if ball_centers and elbow_positions_y["left"] and elbow_positions_y["right"] and ear_positions:
+    if ball_centers and ear_positions and (elbow_positions_y["left"] or elbow_positions_y["right"]) :
         last_ball_center = ball_centers[-1]
-        max_left_elbow = max(elbow_positions_y["left"])
-        max_right_elbow = max(elbow_positions_y["right"])
-        avg_nose_height = np.mean(ear_positions)
+        if not elbow_positions_y["left"]:
+            elbow_positions_y["left"] = [0]
+        if not elbow_positions_y["right"]:
+            elbow_positions_y["right"] = [0]
+        max_left_elbow = min(elbow_positions_y["left"])
+        max_right_elbow = min(elbow_positions_y["right"])
+        avg_ear_height = np.mean(ear_positions)
 
-        if last_ball_center[1] < avg_nose_height and (
-           max_left_elbow < avg_nose_height or max_right_elbow < avg_nose_height):
+        if last_ball_center[1] < avg_ear_height and (
+            avg_ear_height < max_left_elbow or avg_ear_height < max_right_elbow):
             tags.add(5)
 
     # ------------------------
