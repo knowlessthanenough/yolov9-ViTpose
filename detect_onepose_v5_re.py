@@ -751,8 +751,8 @@ def parse_opt():
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='dataset.yaml path')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640],
                         help='inference size h,w')
-    parser.add_argument('--conf-thres', type=float, default=0.4, help='confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
+    parser.add_argument('--conf-thres', type=float, default=0.5, help='confidence threshold')
+    parser.add_argument('--iou-thres', type=float, default=0.5, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
     parser.add_argument('--device', default=0, help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--view-img', action='store_true', help='show results')
@@ -777,7 +777,7 @@ def parse_opt():
     parser.add_argument('--goalkeeper_clothes_colors_histogram_path', type=str, default = None, help = 'numpy array of HSV colors histogram')
     parser.add_argument('--ball-speed', type=float, default=0, help='ball speed')
     parser.add_argument('--distance_threshold', type=float, default=100, help='distance threshold')
-    parser.add_argument('--movement_threshold', type=float, default=600, help='movement threshold')
+    parser.add_argument('--movement_threshold', type=float, default=300, help='movement threshold')
     parser.add_argument('--speed_threshold', type=float, default=50, help='speed threshold')
     parser.add_argument('--jump_threshold', type=float, default=100, help='jump threshold')
     parser.add_argument('--elbow_angle_threshold', type=float, default=160, help='elbow angle threshold')
@@ -805,3 +805,5 @@ if __name__ == "__main__":
 # python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/param1/10-1.mp4" --name 'test' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/10-1_goalkeeper_hist.npy
 
 # python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --source "./runs/detect/real_goal2-2/clips/" --name 'real_goal2_anly' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/real_goal2.npy
+
+# python3 detect_onepose_v5_re.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/demo_video/clips/" --name 'demo_video_high_conf_anly' --ball-speed 60 --goalkeeper_clothes_colors_histogram_path ./data/histograms/gk01_clothes.npy 

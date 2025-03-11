@@ -18,9 +18,9 @@ def classify_goalkeeper_behavior(
 
     Classifies goalkeeper behavior for three cases:
     - Class 0 : No any bellow class detected.
-    - Class 1 & 2: Ball is far from skeleton, and goalkeeper's movement is limited.
+    - Class 1 & 2 & 11: Ball is far from skeleton, and goalkeeper's movement is limited.
     - Class 3: Goalkeeper's last 5-frame average center is farther from the ball than the first 5-frame average center.
-    - Class 4: Ball above the skeleton ear point but low or not jump to catch the ball.
+    - Class 4 & 12 : Ball above the skeleton ear point but low or not jump to catch the ball.
     - Class 5: Ball above the skeleton ear point but low or not raise elbow above ear to catch the ball.
     - Class 6: Elbow angle is below the threshold (degrees) when the ball is in the shoulder-centered area.
     - Class 7: Elbow angle is decreasing over time when the ball is in the shoulder-centered area.
@@ -219,6 +219,7 @@ def classify_goalkeeper_behavior(
                 if total_movement < movement_threshold:
                     tags.add(1)
                     tags.add(2)
+                    tags.add(11)
 
     # ------------------------
     # Case 3: Compare average center points
@@ -249,6 +250,7 @@ def classify_goalkeeper_behavior(
         # so "ball above ear" is ball_center[1] < nose_y
         if total_foot_move < jump_threshold and last_ball_center[1] < avg_ear_height:
             tags.add(4)
+            tags.add(12)
 
     # ------------------------
     # Case 5: Ball above ear + elbows not raised
