@@ -36,6 +36,6 @@ def draw_polygon_with_point(polygon_points, point, polygon_color='blue', point_c
     plt.show()
 
 # Example usage
-polygon_pts = [( 952.43,      572.03),(   1024.3,      575.54), ( 1090.4,      651.68), (1132.7,      756.91),( 837.02,      752.86), ( 896.03,      656.51)]
-point = (995.5 ,707)
+polygon_pts = [(  1528.8,      581.32),(   1602.6,      582.19), (  1612.2,      658.11), ( 1633.6,      758.87),( 1443.9,      750.39 ), (  1459.5,      641.52)]
+point = (1610.5, 728)
 draw_polygon_with_point(polygon_pts, point)

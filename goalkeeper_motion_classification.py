@@ -2,6 +2,9 @@
 from shapely.geometry import Point, Polygon
 import numpy as np
 
+def has_decrease(arr):
+    return any(arr[i] < arr[i - 1] for i in range(1, len(arr)))
+
 def classify_goalkeeper_behavior(
     all_frame_detections,
     ball_speed,
@@ -47,6 +50,7 @@ def classify_goalkeeper_behavior(
     foot_positions = {"left": [], "right": []}
     elbow_positions_y = {"left": [], "right": []}
     elbow_angles = {"left": [], "right": []}
+    max_radius = 0
 
     tags = set()
 
@@ -78,6 +82,7 @@ def classify_goalkeeper_behavior(
                 seen_ball = True
                 wx1, wy1, wx2, wy2 = detection['bbox_warp']
                 ball_center = [(wx1 + wx2) / 2, (wy1 + wy2) / 2]
+                ball_upper_mid = [(wx1 + wx2) / 2, wy1]
                 ball_size = (wx2 - wx1) * (wy2 - wy1)
 
             if detection['cls'] == 0 and detection['score'] > 0:  # Goalkeeper
@@ -86,83 +91,76 @@ def classify_goalkeeper_behavior(
 
         # If we don't have a ball or GK for this frame, skip to the next
         if ball_center is None or goalkeeper_skeleton is None:
+            print("No ball or GK detected in frame", frame_idx)
             continue
-
+        else:
+            print("Ball and GK detected in frame", frame_idx)
+            print("Ball center", ball_center)
+        
         # -------------- Case 10 --------------
         polygon_points = [
             goalkeeper_skeleton[11], goalkeeper_skeleton[12],
             goalkeeper_skeleton[14], goalkeeper_skeleton[16],
             goalkeeper_skeleton[15], goalkeeper_skeleton[13]
         ]
-        # if missing points skip this frame
-        if any(pt is None for pt in polygon_points):
-            continue
-        polygon = Polygon(polygon_points)
-        ball_point = Point(ball_center)
-        if polygon.is_valid and polygon.contains(ball_point):
-            tags.add(10)
+        # if all points is not none
+        if all(pt is not None for pt in polygon_points):
+            polygon = Polygon(polygon_points)
+            ball_point = Point(ball_upper_mid)
+            if polygon.is_valid and polygon.contains(ball_point):
+                tags.add(10)
 
         # -------------- Cases 6,7,9 --------------
         left_shoulder = goalkeeper_skeleton[5]
+        if left_shoulder is not None and goalkeeper_skeleton[7] is not None:
+            left_upper_arm_len = np.linalg.norm(np.array(left_shoulder) - np.array(goalkeeper_skeleton[7]))
+            max_radius = max(2*left_upper_arm_len, max_radius)
+            dist_left = np.linalg.norm(np.array(ball_center) - np.array(left_shoulder))
+            ball_in_area = dist_left <= max_radius
+            # Calculate elbow angles
+            if goalkeeper_skeleton[9] is not None:
+                left_elbow_angle = calculate_angle(
+                    goalkeeper_skeleton[5],
+                    goalkeeper_skeleton[7],
+                    goalkeeper_skeleton[9]
+                )
+                elbow_angles["left"].append(left_elbow_angle)
+
+            if ball_in_area and ball_size > 2500:  # 50*50
+                # Case 9: ball speed < threshold
+                if ball_speed < speed_threshold:
+                    tags.add(9)
+                if has_decrease(elbow_angles["left"][-10:]):
+                    tags.add(7)
+                if left_elbow_angle < elbow_angle_threshold:
+                    tags.add(6)
+
         right_shoulder = goalkeeper_skeleton[6]
-        if left_shoulder is not None and right_shoulder is not None:
-            try:
-                left_upper_arm_len = np.linalg.norm(
-                    np.array(left_shoulder) - np.array(goalkeeper_skeleton[7])
-                )
-                right_upper_arm_len = np.linalg.norm(
-                    np.array(right_shoulder) - np.array(goalkeeper_skeleton[8])
-                )
-                max_radius = 2 * max(left_upper_arm_len, right_upper_arm_len)
+        if right_shoulder is not None and goalkeeper_skeleton[8] is not None:
+            right_upper_arm_len = np.linalg.norm(
+                np.array(right_shoulder) - np.array(goalkeeper_skeleton[8])
+            )
+            max_radius = max(2*right_upper_arm_len, max_radius)
+            dist_right = np.linalg.norm(np.array(ball_center) - np.array(right_shoulder))
+            ball_in_area = dist_right <= max_radius
+            if goalkeeper_skeleton[10] is not None:
+                right_elbow_angle = calculate_angle(
+                    goalkeeper_skeleton[6],
+                    goalkeeper_skeleton[8],
+                    goalkeeper_skeleton[10]
+                    )
+                elbow_angles["right"].append(right_elbow_angle)
 
-                dist_left = np.linalg.norm(np.array(ball_center) - np.array(left_shoulder))
-                dist_right = np.linalg.norm(np.array(ball_center) - np.array(right_shoulder))
+            if ball_in_area and ball_size > 0: #50*50
+                # Case 9: ball speed < threshold
+                if ball_speed < speed_threshold:
+                    tags.add(9)
+                if has_decrease(elbow_angles["right"][-10:]):
+                    tags.add(7)
+                if right_elbow_angle < elbow_angle_threshold:
+                    tags.add(6)
 
-                ball_in_area = dist_left <= max_radius or dist_right <= max_radius
-
-                if ball_in_area and ball_size > 3600: #60*60
-                    # Case 9: ball speed < threshold
-                    if ball_speed < speed_threshold:
-                        tags.add(9)
-
-                    # Calculate elbow angles
-                    try:
-                        left_elbow_angle = calculate_angle(
-                            goalkeeper_skeleton[5],
-                            goalkeeper_skeleton[7],
-                            goalkeeper_skeleton[9]
-                        )
-                    except (TypeError, ValueError):
-                        left_elbow_angle = 180
-
-                    try:
-                        right_elbow_angle = calculate_angle(
-                            goalkeeper_skeleton[6],
-                            goalkeeper_skeleton[8],
-                            goalkeeper_skeleton[10]
-                        )
-                    except (TypeError, ValueError):
-                        right_elbow_angle = 180
-
-                    # Case 7: if elbow angle is decreasing over frames
-                    if elbow_angles["left"] and elbow_angles["right"]:
-                        prev_left = elbow_angles["left"][-1]
-                        prev_right = elbow_angles["right"][-1]
-                        if left_elbow_angle < prev_left or right_elbow_angle < prev_right:
-                            tags.add(7)
-
-                    # Store angles
-                    elbow_angles["left"].append(left_elbow_angle)
-                    elbow_angles["right"].append(right_elbow_angle)
-
-                    # Case 6: elbow angle < threshold
-                    if (left_elbow_angle < elbow_angle_threshold or
-                            right_elbow_angle < elbow_angle_threshold):
-                        tags.add(6)
-
-            except Exception:
-                pass
-
+        #-------------------------------------------
         # Track foot, ear, and elbow y positions
         if goalkeeper_skeleton[15] is not None:
             foot_positions["left"].append(goalkeeper_skeleton[15][1])

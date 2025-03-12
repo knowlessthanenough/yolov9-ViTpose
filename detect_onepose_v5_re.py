@@ -129,79 +129,115 @@ def infer_on_dataset(
     dt = (Profile(), Profile(), Profile())
     video_detections = []  # To store detections per video
 
-    current_video_detections = []  # To store detections for the current video
-    current_video_path = None  # Track which video we are processing
-    
+    current_video_detections = []  # Detections for current video
+    current_video_path = None      # Track which video we're processing
 
-    # If 'dataset' supports len(), use it for total frames. Otherwise set a fixed total or remove total=...
-    total_frames = len(dataset) if hasattr(dataset, '__len__') else None
+    dataset = list(dataset)
 
-    if use_tqdm:
-        pbar = tqdm(total=total_frames, desc="Infer on dataset") if total_frames else None
+    # --- Compute total unique videos (if possible) ---
+    if len(dataset) > 0:
+        all_video_paths = [item[0] for item in dataset]
+        total_video_count = len(set(all_video_paths))
     else:
-        pbar = None
+        total_video_count = 0
+
+    video_index = 0  # current video counter
+
+    # Define target range parameters: process frames 90 to 149 (i.e. 60 frames)
+    target_start = 90                
+    target_total = 60                
+    target_end = target_start + target_total  # non-inclusive
+
+    # total_frames = len(dataset) if hasattr(dataset, '__len__') else None
+    pbar = None
 
     for path, im, im0s, vid_cap, s in dataset:
-        # Detect video change
+        # New video detection: reset per-video counters
         if current_video_path is None or current_video_path != path:
-            if current_video_detections:  # If there are detections for the previous video
+            if pbar:
+                pbar.close()
+                pbar=None
+
+            if current_video_detections:
                 video_detections.append((current_video_path, current_video_detections))
-                current_video_detections = []  # Reset for the next video
+                current_video_detections = []
+
             current_video_path = path
-        # --------------------------------------
-        # 1) Preprocessing & YOLO Inference
-        # --------------------------------------
+            video_index += 1
+            video_frame_counter = 0  # reset per-video frame counter
+            pbar = None
+
+        video_frame_counter += 1
+
+        # Process only frames within target range
+        if video_frame_counter < target_start or video_frame_counter >= target_end:
+            continue
+
+
+        # Re-index processed frames to start at 1 (so frame 90 becomes 1, 149 becomes 60)
+        processed_frame = video_frame_counter - target_start + 1
+
+        # --- Preprocessing & Inference ---
         with dt[0]:
             im = torch.from_numpy(im).to(model.device)
             im = im.half() if model.fp16 else im.float()
             im /= 255.0
             if len(im.shape) == 3:
-                im = im[None]  # batch dimension
+                im = im[None]  # add batch dimension
 
         with dt[1]:
-            visualize_path = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
+            visualize_path = increment_path(save_dir / Path(current_video_path).stem, mkdir=True) if visualize else False
             pred = model(im, augment=augment, visualize=visualize_path)
 
         with dt[2]:
             pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
 
-        # --------------------------------------
-        # 2) Process Predictions
-        # --------------------------------------
+        # --- Process Predictions ---
         for i, det in enumerate(pred):
             seen += 1
 
-            # Multi-webcam logic
-            if hasattr(dataset, 'count') and isinstance(path, list):
-                p, im0, frame = path[i], im0s[i].copy(), dataset.count
-                s += f'{i}: '
+            # For multi-camera inputs, assume path is a list.
+            # Use channel-specific variables but log only for the first channel.
+            if isinstance(path, list):
+                p_i = Path(path[i])
+                im0_i = im0s[i].copy()
             else:
-                p, im0, frame = path, im0s.copy(), getattr(dataset, 'frame', 0)
+                p_i = Path(path)
+                im0_i = im0s.copy()
 
-            p = Path(p)
-            save_path = str(save_dir / p.name)
-            txt_path = str(save_dir / 'labels' / p.stem) + (
-                '' if dataset.mode == 'image' else f'_{frame}'
-            )
+            # Only log once per frame using the first channel (i == 0)
+            if not (isinstance(path, list) and i > 0):
+                frame = processed_frame
+                # Use p_i from the first channel for logging
+                save_path = str(save_dir / p_i.name)
+                ext = p_i.suffix.lower()  # e.g. ".mp4", ".jpg", etc.
+                image_exts = ('.jpg', '.jpeg', '.png', '.bmp', '.gif')
+
+                if ext in image_exts:
+                    # We'll treat this as an image file => no frame number
+                    txt_path = str(save_dir / 'labels' / p_i.stem)
+                    mode = 'image'
+                else:
+                    # We'll treat this as a video => append frame number
+                    txt_path = str(save_dir / 'labels' / p_i.stem) + f'_{frame}'
+                    mode = 'video'
+
+                im0_warped = im0_i
+
+                # If detections exist, rescale boxes
+                if len(det):
+                    det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0_i.shape).round()
+
+                # Build detection summary (assume class 0 represents "person")
+                person_count = 0
+                if len(det):
+                    person_count = sum(1 for *_, conf, cls_id in det if int(cls_id) == 0)
+                person_str = f"{person_count} person" if person_count == 1 else f"{person_count} persons"
 
 
-            im0_warped = im0
 
-            # Rescale boxes
-            if len(det):
-                det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()
-
-            # Print detection summary
-            for c in det[:, 5].unique():
-                n = (det[:, 5] == c).sum()
-                s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "
-            s += '%gx%g ' % im.shape[2:]
-
-            # --------------------------------------
-            # 3) Collect all detections for this frame
-            # --------------------------------------
+            # --- Process detections (for each channel) ---
             all_detections_for_frame = []
-
             if len(det):
                 for *xyxy, conf, cls_id in reversed(det):
                     detection_result = process_single_detection(
@@ -219,36 +255,23 @@ def infer_on_dataset(
                     if detection_result:
                         all_detections_for_frame.append(detection_result)
 
-            # Append this frame's detections to the master list
             current_video_detections.append(all_detections_for_frame)
 
-            # print(f"Frame {frame}: {len(all_detections_for_frame)} detections")
-            # print(all_detections_for_frame)
-
-            # --------------------------------------
-            # 4) If goalkeeper_clothes_colors_histogram is set, 
-            #    keep only the best skeleton among persons
-            # --------------------------------------
+            # --- (Optional) Post-processing for best skeleton selection ---
             if goalkeeper_clothes_colors_histogram is not None:
-                # find person with highest 'score'
                 best_score = -1
                 best_idx = -1
                 for idx, detres in enumerate(all_detections_for_frame):
                     if detres['cls'] == 0 and detres['score'] > best_score:
                         best_score = detres['score']
                         best_idx = idx
-
-
-                # null out skeleton for all other persons
                 for idx, detres in enumerate(all_detections_for_frame):
                     if detres['cls'] == 0 and idx != best_idx:
                         detres['keypoints'] = None
                         detres['keypoints_conf'] = None
                         detres['score'] = 0.0
 
-            # -------------
-            # (A) Save detections to YOLO TXT
-            # -------------
+            # --- Save and draw ---
             if save_txt and len(all_detections_for_frame) > 0:
                 save_all_detections_txt(
                     all_detections_for_frame,
@@ -256,60 +279,65 @@ def infer_on_dataset(
                     save_conf
                 )
 
-            # -------------
-            # (B) Draw bounding boxes & skeletons
-            # -------------
             draw_all_detections(
-                im0_warped,
+                im0_i,
                 all_detections_for_frame,
                 pose_model,
                 line_thickness
             )
 
-            # print(im0_warped.shape)
-
-            # Show in a window
             if view_img:
-                handle_view_img(p, windows, im0_warped)
+                handle_view_img(p_i, windows, im0_i)
 
-            # Save image / video
             if save_img:
                 handle_save_results(
-                    dataset,
+                    mode,
                     i,
-                    im0_warped,
+                    im0_i,
                     save_path,
                     vid_path,
                     vid_writer
                 )
+        
+        # Create a new progress bar for this video, from 1..60
+        if use_tqdm and pbar is None:
+            pbar = tqdm(
+                total=60,
+                desc=f"Video {video_index}/{total_video_count}",
+                leave=True
+            )
 
         if pbar:
-            pbar.set_postfix_str(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
             pbar.update(1)
-            # tqdm.write(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")  # Ensures logging does not break tqdm
         else:
-            LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
-
+            log_str = (
+                f"video {video_index}/{total_video_count} "
+                f"({frame}/60) {p_i}: {person_str}, "
+                f"{im0_i.shape[0]}x{im0_i.shape[1]} {dt[1].dt * 1E3:.1f}ms"
+            )
+            LOGGER.info(log_str)
 
     if pbar:
         pbar.close()
 
-    # After processing all videos, append the last video's detections
     if current_video_detections:
         video_detections.append((current_video_path, current_video_detections))
 
-    # --------------------------------------
-    # 5) Classify goalkeeper behavior
-    # --------------------------------------
     behavior_dict = {}
     if goalkeeper_clothes_colors_histogram is not None:
-        # print("----------------------------Classifying goalkeeper behavior----------------------------")
-        for video_path, video_detections in video_detections:
-            if video_detections:  # Ensure there are detections for this video
-                behavior_dict[video_path] = classify_goalkeeper_behavior(video_detections, ball_speed, distance_threshold, movement_threshold, speed_threshold, jump_threshold, elbow_angle_threshold)
+        for video_path, video_dets in video_detections:
+            if video_dets:
+                behavior_dict[video_path] = classify_goalkeeper_behavior(
+                    video_dets,
+                    ball_speed,
+                    distance_threshold,
+                    movement_threshold,
+                    speed_threshold,
+                    jump_threshold,
+                    elbow_angle_threshold
+                )
             else:
                 behavior_dict[video_path] = "No detections"
-            # print("the video is classify as behavior " , behaviors)
 
     return seen, windows, dt, behavior_dict
 
@@ -380,7 +408,7 @@ def process_single_detection(
                     'right_hip': keypoints_dict['points'][12]
                 }
                 # if bbox is too small, skip
-                if (x2 - x1) * (y2 - y1) < 10000:
+                if (x2 - x1) * (y2 - y1) < 40000:
                     return None
                 
                 else:
@@ -557,9 +585,8 @@ def handle_view_img(p, windows, im0_warped_final):
     cv2.imshow(str(p), im0_warped_final)
     cv2.waitKey(1)
 
-
 def handle_save_results(
-    dataset,
+    mode,               # <--- a string or boolean indicating "image" vs. "video"
     i,
     im0_warped_final,
     save_path,
@@ -569,8 +596,7 @@ def handle_save_results(
     """
     Save either a single image or frames of a video/stream.
     """
-    # print(f"Dataset mode: {dataset.mode}")
-    if dataset.mode == 'image':
+    if mode == 'image':
         # Save a single image
         cv2.imwrite(save_path, im0_warped_final)
     else:
@@ -594,7 +620,6 @@ def handle_save_results(
             if not vid_writer[i].isOpened():
                 print(f"Error: Failed to initialize video writer for {save_path}")
 
-            # print(f"Writing frame {i} to video: {save_path}")
             vid_writer[i].write(im0_warped_final)
 
 
@@ -751,8 +776,8 @@ def parse_opt():
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='dataset.yaml path')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640],
                         help='inference size h,w')
-    parser.add_argument('--conf-thres', type=float, default=0.5, help='confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.5, help='NMS IoU threshold')
+    parser.add_argument('--conf-thres', type=float, default=0.4, help='confidence threshold')
+    parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
     parser.add_argument('--device', default=0, help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--view-img', action='store_true', help='show results')

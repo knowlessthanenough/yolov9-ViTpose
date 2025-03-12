@@ -158,7 +158,9 @@ def infer_on_dataset(
     seen, windows = 0, []
     dt = (Profile(), Profile(), Profile())
 
-    frames_buffer = deque(maxlen=60)  # store the last 60 frames
+    pre_trigger_frames_to_save = 150              # Number of frames to buffer before trigger
+    frames_buffer = deque(maxlen=pre_trigger_frames_to_save)  # store the last frames for pre-trigger
+    post_trigger_frames = 150                       # Number of frames to record after trigger
     skip_counter = 0                 # if > 0, skip checking “big ball” triggers
     clip_index = 0                   # to name each saved clip uniquely
     fps = 30                         # (optional) frames per second for each clip
@@ -167,6 +169,10 @@ def infer_on_dataset(
     video_start_time = None
     video_fps = fps
     video_start_frame_idx = 0
+
+    # New state variables for post-trigger recording
+    active_clip_writer = None      # when not None, we are recording post-trigger frames
+    post_trigger_counter = 0       # counter for frames written after trigger
 
     # If 'dataset' supports len(), use it for total frames. Otherwise set a fixed total or remove total=...
     total_frames = len(dataset) if hasattr(dataset, '__len__') else None
@@ -187,9 +193,7 @@ def infer_on_dataset(
             frames_buffer.clear()  # Clear the frame buffer
             skip_counter = 0       # Reset the skip counter
             LOGGER.info(f"New video detected ({current_video_id}). State reset.")
-        
             video_start_frame_idx = frame_idx
-
 
         # Update the tracker for the next iteration
         prev_video_id = current_video_id
@@ -262,9 +266,6 @@ def infer_on_dataset(
                 if det_result:
                     all_detections_for_frame.append(det_result)
 
-            # print(f"Frame {frame}: {len(all_detections_for_frame)} detections")
-            # print(all_detections_for_frame)
-
             # -------------
             # (A) Save detections to YOLO TXT
             # -------------
@@ -286,17 +287,14 @@ def infer_on_dataset(
                     line_thickness
                 )
 
-            # 1) Store the final annotated frame in our buffer
+            # (1) Store the final annotated frame in our buffer (pre-trigger frames)
             frames_buffer.append(im0_warped.copy())  # copy() so we don’t overwrite by reference
 
-            # 2) If we are skipping, just decrement skip_counter
+            # (2) If we are skipping, just decrement skip_counter
             if skip_counter > 0:
                 skip_counter -= 1
             else:
-                # 3) We are not skipping => check for big ball triggers
-                #    In your code, “all_detections_for_frame” holds all det results
-
-                # Dimensions of the warped image
+                # (3) We are not skipping => check for big ball triggers
                 im0_h, im0_w = im0_warped.shape[:2]
                 triggered = False
 
@@ -305,26 +303,22 @@ def infer_on_dataset(
                         wx1, wy1, wx2, wy2 = det_result['bbox_warp']
                         w = wx2 - wx1
                         h = wy2 - wy1
-
                         # Calculate center of warped bbox
                         cx = (wx1 + wx2) / 2.0
                         cy = (wy1 + wy2) / 2.0
-                        
-                        # # 1) Check if center is inside warped image
-                        # if 0 <= cx < im0_w and 0 <= cy < im0_h:
-                            # 2) Check if w >= 75 AND h >= 75
+
                         if w >= 70 and h >= 70:
                             triggered = True
                             break
 
-                # 4) If triggered => save a new short clip
-                if triggered:
+                # (4) If triggered and we are not already recording a clip, start recording post-trigger frames
+                if triggered and active_clip_writer is None:
                     clip_index += 1
                     clip_name = f"clip_{clip_index}.mp4"
                     clip_path = str(save_dir / 'clips' / clip_name)
                     (save_dir / 'clips').mkdir(exist_ok=True)  # ensure subdir
 
-                    # Create a temporary video writer
+                    # Create a new video writer
                     height, width = im0_warped.shape[:2]
                     writer = cv2.VideoWriter(
                         clip_path,
@@ -333,58 +327,50 @@ def infer_on_dataset(
                         (width, height)
                     )
 
-                    # (a) Write out the last 60 frames
-                    #     If we have fewer than 60, that’s okay => we write all
+                    # (a) Write out the pre-trigger frames stored in the buffer
                     for old_frame in frames_buffer:
                         writer.write(old_frame)
 
-                    clip_path_dict = {
-                        'clip_path': clip_path,
-                        'speed': 0.0,
-                        'video_time': None,
-                        'real_time': None
-                    }
+                    # Instead of releasing writer here, we keep it open to record post-trigger frames
+                    active_clip_writer = writer
+                    post_trigger_counter = 0
 
-                    # (b) Since frames_buffer already appended the current frame,
-                    #     we do NOT need to write it again. The current frame is
-                    #     the last item in frames_buffer. If you prefer to add it
-                    #     again, that’s optional. Typically once is enough.
-
-                    writer.release()
-                    LOGGER.info(f"Saved new clip => {clip_path} (last 60 frames + current)")
+                    # Compute timestamps and other metadata as before
                     video_start_time, video_fps = get_video_start_time_and_fps(path)
-                    print(video_start_time, video_start_frame_idx, frame_idx, video_fps)
-                    # **Compute real timestamp** of this trigger
                     trigger_time, video_time = calculate_real_timestamp(
                         video_start_time,
                         video_start_frame_idx,
                         frame_idx,
                         video_fps,
                     )
-
                     speed = find_max_speed_in_range(
                         radar_data_path,
                         trigger_time,
                         time_buffer=60,
                         csv_utc_offset=8
                     )
-
-                    # Store the clip path and timestamp
-                    clip_path_dict['speed'] = speed #dummy speed
-                    clip_path_dict['video_time'] = video_time
-
-                    if trigger_time:
-                        clip_path_dict['real_time'] = trigger_time
-                        LOGGER.info(f"Trigger time (real-world): {trigger_time}")
-                    else:
-                        LOGGER.info("Trigger time (real-world) could not be determined (missing metadata).")
-
+                    clip_path_dict = {
+                        'clip_path': clip_path,
+                        'speed': speed,
+                        'video_time': video_time,
+                        'real_time': trigger_time
+                    }
                     collection_of_speed_dict.append(clip_path_dict)
-                    # 5) Set skip counter => ignore triggers for next 900 frames
+                    # Set skip counter to avoid immediate re-triggering
                     skip_counter = 900
+                    LOGGER.info(f"Triggered and started recording clip => {clip_path}")
 
-
-            # print(im0_warped.shape)
+            # (Extra) If we are in post-trigger recording mode, record the current frame
+            if active_clip_writer is not None:
+                # Write the current frame (post-trigger)
+                active_clip_writer.write(im0_warped.copy())
+                post_trigger_counter += 1
+                # Once we have recorded enough post-trigger frames, finish the clip
+                if post_trigger_counter >= post_trigger_frames:
+                    active_clip_writer.release()
+                    active_clip_writer = None
+                    post_trigger_counter = 0
+                    LOGGER.info("Finished recording post-trigger frames for current clip.")
 
             # Show in a window
             if view_img:
@@ -401,18 +387,17 @@ def infer_on_dataset(
                     vid_writer
                 )
 
-        # LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
         if pbar:
             pbar.set_postfix_str(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
             pbar.update(1)
         else:
-            # Fallback if dataset has no length or if you still want logs:
             LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
 
     if pbar:
         pbar.close()
 
     return seen, windows, dt, collection_of_speed_dict
+
 
 
 def process_single_detection(
@@ -861,3 +846,5 @@ if __name__ == "__main__":
 # python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/C0026.mp4" --name 'real_goal' --goal_image_coordinate 355 330 1504 329 1499 710 365 712  --goal_realworld_size 2400 800 --nosave
 
 # python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/GX040011.mp4" --name 'real_goal2' --goal_image_coordinate 498 382 1415 387 1405 681 504 686  --goal_realworld_size 2400 800 --nosave
+
+# python3 detect_goal.py --weights "./weight/yolov9-c-converted.pt" --source "./data/video/GX010025.MP4" --name 'demo_video' --goal_image_coordinate 77 233 1665 247 1655 758 79 765 --goal_realworld_size 2400 800 --nosave --radar_data_path data/excel/PR_20250208_1739_session.csv 

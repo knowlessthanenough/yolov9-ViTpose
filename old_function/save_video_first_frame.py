@@ -30,6 +30,6 @@ def save_first_frame(video_path, output_image_path):
     cap.release()
 
 if __name__ == "__main__":
-    video_path = "../runs/detect/real_goal2/clips/clip_1.mp4"
-    output_image_path = "../data/images/real_goal2.jpg"
+    video_path = "../data/video/0312behavior7.mp4"
+    output_image_path = "../data/images/0312behavior7.jpg"
     save_first_frame(video_path, output_image_path)
