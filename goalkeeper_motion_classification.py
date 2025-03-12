@@ -91,12 +91,7 @@ def classify_goalkeeper_behavior(
 
         # If we don't have a ball or GK for this frame, skip to the next
         if ball_center is None or goalkeeper_skeleton is None:
-            print("No ball or GK detected in frame", frame_idx)
             continue
-        else:
-            print("Ball and GK detected in frame", frame_idx)
-            print("Ball center", ball_center)
-        
         # -------------- Case 10 --------------
         polygon_points = [
             goalkeeper_skeleton[11], goalkeeper_skeleton[12],
