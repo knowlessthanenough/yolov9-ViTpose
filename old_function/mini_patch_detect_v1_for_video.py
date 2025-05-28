@@ -212,79 +212,87 @@ def run(
     stride, names, pt = model.stride, model.names, model.pt
     imgsz = check_img_size(imgsz, s=stride)  # check image size
 
-    high_resolution_image = cv2.imread(source)
-    if high_resolution_image is None:
-        raise FileNotFoundError(f"❌ Could not load image: {source}")
-    images, offsets = get_image_patches(high_resolution_image, crop_size=imgsz[0], overlap=0.2)
-
-    seen, windows, dt = 0, [], (Profile(), Profile(), Profile())
-    # for path, im, im0s, vid_cap, s in dataset:
-    with dt[0]:
-        batch = preprocess_images(images, device, fp16=model.fp16)
-
-    # Inference
-    with dt[1]:
-        pred = model(batch, augment=augment)
-        print("Predictions before NMS:", len(pred)) # 2
-        print(len(pred[0])) # 2
-        print(pred[0][0].shape) # torch.Size([32, 84, 8400])
-
-    # NMS
-    with dt[2]:
-        pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det) # this take a [[tensor]] and return a list of tensors
-        print("Predictions after NMS:", len(pred)) # 32
-        print(pred[0].shape) # torch.Size([0, 6])
-
-    # Make a copy of the original 4K image for drawing
-    annotated_image = high_resolution_image.copy()
-    all_detections = []
+    cap = cv2.VideoCapture(source)
+    fps = cap.get(cv2.CAP_PROP_FPS) if cap.isOpened() else 30  # default to 30 FPS if not available
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frame_idx = 0
     output_path = str(Path(source).with_name("after_gobalNMS_overlap_remove_annotated_" + Path(source).name))
+    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+    
+    while cap.isOpened():
+        ret, high_resolution_image = cap.read()
+        if not ret:
+            break
 
-    # Process predictions
-    for i, det in enumerate(pred):  # per image
-        x_offset, y_offset = offsets[i]
-        if det is not None and len(det):
-            # Remap to original image coordinates
-            det[:, [0, 2]] += x_offset
-            det[:, [1, 3]] += y_offset
-            all_detections.append(det)
+        frame_idx += 1
+        if frame_idx % vid_stride != 0:
+            continue
+
+        print(f"🔍 Processing frame {frame_idx}")
+
+        images, offsets = get_image_patches(high_resolution_image, crop_size=imgsz[0], overlap=0.2)
+
+        seen, windows, dt = 0, [], (Profile(), Profile(), Profile())
+        # for path, im, im0s, vid_cap, s in dataset:
+        with dt[0]:
+            batch = preprocess_images(images, device, fp16=model.fp16)
+
+        # Inference
+        with dt[1]:
+            pred = model(batch, augment=augment)
+            print("Predictions before NMS:", len(pred)) # 2
+            print(len(pred[0])) # 2
+            print(pred[0][0].shape) # torch.Size([32, 84, 8400])
+
+        # NMS
+        with dt[2]:
+            pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det) # this take a [[tensor]] and return a list of tensors
+            print("Predictions after NMS:", len(pred)) # 32
+            print(pred[0].shape) # torch.Size([0, 6])
+
+        # Make a copy of the original 4K image for drawing
+        annotated_image = high_resolution_image.copy()
+        all_detections = []
         
-    if all_detections:
-        combined = torch.cat(all_detections, dim=0)  # shape [Total_Detections, 6]
-    else:
-        combined = torch.empty((0, 6), dtype=torch.float32, device=model.device)
-    # print the shape of combined
-    print("Combined shape:", combined.shape)
-    # Apply global NMS
-    if combined.shape[0] > 0:
-        final = simple_global_nms(combined, iou_thres=iou_thres, max_det=max_det)
-        final = remove_partially_enclosed_boxes_same_class(final, area_ratio_thresh=0.6, containment_thresh=0.9)
 
-    # # crop and save shirt-only images
-    # crop_count = 0
-    # for det in final:
-    #     x1, y1, x2, y2, conf, cls = det
-    #     cls = int(cls.item())
+        # Process predictions
+        for i, det in enumerate(pred):  # per image
+            x_offset, y_offset = offsets[i]
+            if det is not None and len(det):
+                # Remap to original image coordinates
+                det[:, [0, 2]] += x_offset
+                det[:, [1, 3]] += y_offset
+                all_detections.append(det)
+            
+        if all_detections:
+            combined = torch.cat(all_detections, dim=0)  # shape [Total_Detections, 6]
+        else:
+            combined = torch.empty((0, 6), dtype=torch.float32, device=model.device)
+        # print the shape of combined
+        print("Combined shape:", combined.shape)
+        # Apply global NMS
+        if combined.shape[0] > 0:
+            final = simple_global_nms(combined, iou_thres=iou_thres, max_det=max_det)
+            final = remove_partially_enclosed_boxes_same_class(final, area_ratio_thresh=0.6, containment_thresh=0.9)
+        else:
+            final = []
 
-    #     if cls != 0:
-    #         print(f"⚠️ Skipping non-person class: {cls}")
-    #         continue  # skip non-person classes if filtering
+        final_detections = [(x1.item(), y1.item(), x2.item(), y2.item(), conf.item(), int(cls.item()))
+                        for x1, y1, x2, y2, conf, cls in final]
 
-    #     bbox = [x1, y1, x2, y2]
-    #     crop = crop_clothing_region(high_resolution_image, bbox)
+        draw_detections(annotated_image, final_detections, names)
+        out.write(annotated_image)
 
-    #     crop_path = f"./crop/player_{crop_count:04d}.jpg"
-    #     cv2.imwrite(crop_path, crop)
-    #     print(f"✅ Saved shirt crop to: {crop_path}")
-    #     crop_count += 1
-    #--------------------------------------------------------------------------
+        if view_img:
+            cv2.imshow("YOLO Detection", annotated_image)
+            if cv2.waitKey(1) == ord("q"):
+                break
 
-    final_detections = [(x1.item(), y1.item(), x2.item(), y2.item(), conf.item(), int(cls.item()))
-                    for x1, y1, x2, y2, conf, cls in final]
-
-    draw_detections(annotated_image, final_detections, names)
-    cv2.imwrite(output_path, annotated_image)
-    print(f"✅ Saved image to: {output_path}")
+    cap.release()
+    out.release()
+    cv2.destroyAllWindows()
+    print(f"✅ Saved video to: {output_path}")
 
 
 def parse_opt():
@@ -332,4 +340,4 @@ if __name__ == "__main__":
     main(opt)
 
 # Example usage:
-# python3 mini_patch_detect.py --source './data/images/4k_image.jpg' --img 640 --device 0 --weights './weight/yolov9-s.pt' --nosave --classes 0 32
+# python3 mini_patch_detect.py --source './data/images/4k_video.mov' --img 640 --device 0 --weights './weight/yolov9-s.pt' --nosave --classes 0 32
