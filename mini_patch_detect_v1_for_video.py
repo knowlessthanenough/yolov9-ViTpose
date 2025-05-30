@@ -12,8 +12,9 @@ import numpy as np
 import torchreid
 from PIL import Image
 import torchvision.transforms as T
-
+import torch.nn.functional as F
 import torch
+import json
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLO root directory
@@ -27,6 +28,30 @@ from utils.general import (LOGGER, Profile, check_file, check_img_size, check_im
                            increment_path, non_max_suppression, print_args, scale_boxes, strip_optimizer, xyxy2xywh)
 from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, smart_inference_mode
+from collections import defaultdict
+
+def match_features_to_teams_in_memory(crop_features, team_data):
+    team_features = team_data['features']
+    team_names = team_data['filenames']
+    team_features = F.normalize(team_features, dim=1)
+
+    results = []
+
+    for crop in crop_features:
+        crop = F.normalize(crop.unsqueeze(0), dim=1)  # [1, 512]
+        sims = torch.mm(team_features, crop.T).squeeze(1)  # [M]
+
+        # 分類到 team
+        team_scores = {}
+        for team, sim in zip(team_names, sims):
+            team_key = os.path.basename(team).split('_')[0]
+            team_scores.setdefault(team_key, []).append(sim.item())
+
+        # 對每個 team 做平均
+        team_avg_scores = {team: sum(scores)/len(scores) for team, scores in team_scores.items()}
+        results.append(team_avg_scores)  # 儲存每個人對每隊的分數
+
+    return results
 
 def crop_clothing_region(image, bbox, 
                          top_ratio=0.25, bottom_ratio=0.55, 
@@ -190,6 +215,7 @@ def run(
         weights=ROOT / 'yolo.pt',  # model path or triton URL
         source=ROOT / 'data/images',  # file/dir/URL/glob/screen/0(webcam)
         data=ROOT / 'data/coco.yaml',  # dataset.yaml path
+        clothes_feature_path=ROOT / 'reid/reid_test_image/team/team.pt',  # path to clothing features
         imgsz=(640, 640),  # inference size (height, width)
         conf_thres=0.25,  # confidence threshold
         iou_thres=0.45,  # NMS IOU threshold
@@ -262,13 +288,24 @@ def run(
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_idx = 0
     output_path = str(Path(save_dir) / ("after_gobalNMS_overlap_remove_annotated_" + Path(source).name))
+    output_json_path = str(Path(save_dir) / "team_tracking.json")
     print(f"🔄 Saving video to: {output_path}")
+    print(f"🔄 Saving tracking JSON to: {output_json_path}")
     out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
 
     # Initialize tracker
     ball_tracker = BYTETracker(tracker_args, frame_rate=tracker_args.fps)
     person_tracker = BYTETracker(tracker_args, frame_rate=tracker_args.fps)
+
+    # load the team reference features
+    if clothes_feature_path and os.path.exists(clothes_feature_path):
+        print(f"🔍 Loading clothing features from: {clothes_feature_path}")
+        team_features = torch.load(clothes_feature_path)
     
+    # Initialize global dictionary once outside main loop if not already done
+    if 'team_json_records' not in globals():
+        team_json_records = defaultdict(lambda: {'frame_id': [], 'team_conf': [], 'bbox': []})
+
     while cap.isOpened():
         ret, high_resolution_image = cap.read()
         if not ret:
@@ -344,6 +381,7 @@ def run(
         # Store all crop tensors and track info for matching
         crop_tensors = []
         crop_track_ids = []
+        frame_crop_features = []
 
         # Format detections with track ID
         final_detections = []
@@ -376,14 +414,45 @@ def run(
             batch_tensor = torch.stack(crop_tensors).to(device)
             with torch.no_grad():
                 batch_features = re_id_model(batch_tensor)
-            frame_crop_features = [
-                {'track_id': tid, 'cls': 0, 'feature': feat.cpu()}
-                for tid, feat in zip(crop_track_ids, batch_features)
-            ]
-        else:
-            frame_crop_features = []
+            frame_crop_features.extend(batch_features.cpu())  # [N, 512]
         print(f"Extracted {len(frame_crop_features)} ReID features from crops.")
 
+        # do clothing matching
+        if clothes_feature_path and os.path.exists(clothes_feature_path):
+            print(f"🔍 Matching clothing features with team data from: {clothes_feature_path}")
+            team_scores = match_features_to_teams_in_memory(frame_crop_features, team_features)
+
+        # Update tracking JSON records
+        # Track current feature index to sync with crop detections
+        feature_index = 0
+
+        for det in final_detections:
+            x1, y1, x2, y2, conf, cls, track_id = det
+            if track_id not in team_json_records:
+                team_json_records[track_id] = {
+                    'track_id': track_id,
+                    'frame_id': [],
+                    'team_conf': [],
+                    'bbox': []
+                }
+
+            team_json_records[track_id]['frame_id'].append(frame_idx)
+            team_json_records[track_id]['bbox'].append([int(x1), int(y1), int(x2), int(y2), float(conf)])
+
+            if cls == 0:  # Person
+                if feature_index < len(team_scores):
+                    # Ensure all scores are float for JSON
+                    team_conf = {k: float(v) for k, v in team_scores[feature_index].items()}
+                    team_json_records[track_id]['team_conf'].append(team_conf)
+                    feature_index += 1
+                else:
+                    # Append empty if match score is missing
+                    team_json_records[track_id]['team_conf'].append({})
+            elif cls == 32:
+                # Add empty team_conf to maintain same structure
+                team_json_records[track_id]['team_conf'].append({})
+
+        # print("team_scores: ",team_scores, )
         draw_detections(annotated_image, final_detections, names)
         out.write(annotated_image)
 
@@ -397,12 +466,18 @@ def run(
     cv2.destroyAllWindows()
     print(f"✅ Saved video to: {output_path}")
 
+    output_data = list(team_json_records.values())
+    with open(output_json_path, 'w') as f:
+        json.dump(output_data, f, indent=4)
+    print(f"✅ Saved team tracking JSON to {output_json_path}")
+
 
 def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolo.pt', help='model path or triton URL')
     parser.add_argument('--source', type=str, default=ROOT / 'data/images', help='file/dir/URL/glob/screen/0(webcam)')
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='(optional) dataset.yaml path')
+    parser.add_argument('--clothes-feature-path', type=str, default=ROOT / 'reid/reid_test_image/team/team.pt', help='path to clothing features for ReID')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
