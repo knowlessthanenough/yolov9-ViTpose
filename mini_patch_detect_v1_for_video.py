@@ -15,6 +15,7 @@ import torchvision.transforms as T
 import torch.nn.functional as F
 import torch
 import json
+import time
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLO root directory
@@ -29,6 +30,7 @@ from utils.general import (LOGGER, Profile, check_file, check_img_size, check_im
 from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, smart_inference_mode
 from collections import defaultdict
+from numba import njit
 
 def match_features_to_teams_in_memory(crop_features, team_data):
     team_features = team_data['features']
@@ -90,6 +92,127 @@ def crop_clothing_region(image, bbox,
 
     cropped = image[new_y1:new_y2, new_x1:new_x2]
     return cropped
+
+#----------------------
+@njit
+def _remove_enclosed_numba(dets, area_thresh, containment_thresh):
+    N = dets.shape[0]
+    keep = np.ones(N, dtype=np.bool_)
+
+    for i in range(N):
+        if not keep[i]:
+            continue
+        box_i = dets[i, :4]
+        cls_i = int(dets[i, 5])
+        area_i = (box_i[2] - box_i[0]) * (box_i[3] - box_i[1])
+
+        for j in range(N):
+            if i == j or not keep[j]:
+                continue
+            box_j = dets[j, :4]
+            cls_j = int(dets[j, 5])
+            area_j = (box_j[2] - box_j[0]) * (box_j[3] - box_j[1])
+            if cls_i != cls_j:
+                continue
+
+            # Determine small and large
+            if area_i < area_j:
+                small_idx, large_idx = i, j
+            else:
+                small_idx, large_idx = j, i
+
+            box_small = dets[small_idx, :4]
+            box_large = dets[large_idx, :4]
+            small_area = (box_small[2] - box_small[0]) * (box_small[3] - box_small[1])
+            large_area = (box_large[2] - box_large[0]) * (box_large[3] - box_large[1])
+
+            xA = max(box_small[0], box_large[0])
+            yA = max(box_small[1], box_large[1])
+            xB = min(box_small[2], box_large[2])
+            yB = min(box_small[3], box_large[3])
+            inter_w = max(0, xB - xA)
+            inter_h = max(0, yB - yA)
+            inter_area = inter_w * inter_h
+
+            containment = inter_area / (small_area + 1e-6)
+            area_ratio = small_area / (large_area + 1e-6)
+
+            if containment >= containment_thresh and area_ratio <= area_thresh:
+                keep[small_idx] = False
+
+    return keep
+
+def remove_boxes_with_numba(detections: torch.Tensor,
+                             area_ratio_thresh=0.6,
+                             containment_thresh=0.9) -> torch.Tensor:
+    if len(detections) < 2:
+        return detections
+
+    det_np = detections.cpu().numpy()
+    keep_mask = _remove_enclosed_numba(det_np, area_ratio_thresh, containment_thresh)
+    return detections[keep_mask]
+
+def remove_partially_enclosed_boxes_optimized(detections, area_ratio_thresh=0.6, containment_thresh=0.9):
+    """
+    Optimized (but logically equivalent) version of remove_partially_enclosed_boxes_same_class.
+    Avoids repeated computation and skips unnecessary comparisons.
+    """
+    if len(detections) < 2:
+        return detections
+
+    keep = []
+    suppressed = set()
+
+    boxes = detections[:, :4]
+    confs = detections[:, 4]
+    classes = detections[:, 5].int()
+    areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+
+    for i in range(len(detections)):
+        if i in suppressed:
+            continue
+        box_i = boxes[i]
+        cls_i = classes[i]
+        area_i = areas[i]
+
+        for j in range(i + 1, len(detections)):  # Only check forward to avoid duplicate pairs
+            if j in suppressed:
+                continue
+            if classes[j] != cls_i:
+                continue
+
+            box_j = boxes[j]
+            area_j = areas[j]
+
+            # Determine which is small and which is large
+            if area_i < area_j:
+                small_idx, large_idx = i, j
+                small_box, large_box = box_i, box_j
+                small_area, large_area = area_i, area_j
+            else:
+                small_idx, large_idx = j, i
+                small_box, large_box = box_j, box_i
+                small_area, large_area = area_j, area_i
+
+            # Compute intersection
+            xA = max(small_box[0], large_box[0])
+            yA = max(small_box[1], large_box[1])
+            xB = min(small_box[2], large_box[2])
+            yB = min(small_box[3], large_box[3])
+            inter_w = max(0, xB - xA)
+            inter_h = max(0, yB - yA)
+            inter_area = inter_w * inter_h
+
+            containment = inter_area / (small_area + 1e-6)
+            area_ratio = small_area / (large_area + 1e-6)
+
+            if containment >= containment_thresh and area_ratio <= area_ratio_thresh:
+                suppressed.add(small_idx)
+
+        if i not in suppressed:
+            keep.append(i)
+
+    return detections[keep]
 
 def remove_partially_enclosed_boxes_same_class(detections, area_ratio_thresh=0.6, containment_thresh=0.9):
     """
@@ -158,6 +281,7 @@ def remove_partially_enclosed_boxes_same_class(detections, area_ratio_thresh=0.6
 
     return detections[keep]
 
+# ---------------------
 def simple_global_nms(dets, iou_thres=0.45, max_det=300):
     if dets.size(0) == 0:
         return dets
@@ -209,6 +333,65 @@ def draw_detections(image, detections, class_names, color=(0, 255, 0)):
         cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
         cv2.putText(image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX,
                     0.6, (255, 255, 255), 2)
+
+class TrackJsonStreamer:
+    """
+    Streams per-track data to disk and frees memory when a track
+    has been ‘quiet’ for > lost_thresh frames.
+    The file is a valid JSON array written incrementally.
+    """
+    def __init__(self, out_path: str,
+                 flush_interval: int = 500,
+                 lost_thresh: int = 100):
+        self.out_path = Path(out_path)
+        self.flush_interval = flush_interval
+        self.lost_thresh   = lost_thresh
+        self.records       = defaultdict(lambda: {
+            "track_id": None,   # filled on first update
+            "frame_id": [],
+            "team_conf": [],
+            "bbox": []
+        })
+        self.last_seen     = {}          # track_id -> last frame
+        self._first_write  = True        # for '[' and commas
+        # open file handle once
+        self.fh = self.out_path.open("w")
+        self.fh.write("[\n")             # start JSON array
+
+    def update(self, tid, frame_idx, bbox, team_conf):
+        rec = self.records[tid]
+        if rec["track_id"] is None:
+            rec["track_id"] = tid
+        rec["frame_id"].append(frame_idx)
+        rec["team_conf"].append(team_conf)
+        rec["bbox"].append(bbox)
+        self.last_seen[tid] = frame_idx
+
+    def maybe_flush(self, frame_idx):
+        """Flush finished / stale tracks every flush_interval frames."""
+        if frame_idx % self.flush_interval != 0:
+            return
+
+        stale = [tid for tid, last in self.last_seen.items()
+                 if frame_idx - last > self.lost_thresh]
+
+        for tid in stale:
+            self._write_record(self.records.pop(tid))
+            self.last_seen.pop(tid, None)
+
+    # ---------- internal ----------
+    def _write_record(self, rec):
+        if not self._first_write:
+            self.fh.write(",\n")
+        json.dump(rec, self.fh, ensure_ascii=False, indent=4)
+        self._first_write = False
+
+    def close(self):
+        # flush remaining tracks
+        for rec in self.records.values():
+            self._write_record(rec)
+        self.fh.write("\n]\n")
+        self.fh.close()
 
 @smart_inference_mode()
 def run(
@@ -288,7 +471,16 @@ def run(
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_idx = 0
     output_path = str(Path(save_dir) / ("after_gobalNMS_overlap_remove_annotated_" + Path(source).name))
+
+    # init json
     output_json_path = str(Path(save_dir) / "team_tracking.json")
+    json_streamer = TrackJsonStreamer(output_json_path,
+                                    flush_interval=500,
+                                    lost_thresh=100)  # tune as needed
+    # # Initialize global dictionary once outside main loop if not already done
+    # if 'team_json_records' not in globals():
+    #     team_json_records = defaultdict(lambda: {'frame_id': [], 'team_conf': [], 'bbox': []})
+
     print(f"🔄 Saving video to: {output_path}")
     print(f"🔄 Saving tracking JSON to: {output_json_path}")
     out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
@@ -302,10 +494,6 @@ def run(
         print(f"🔍 Loading clothing features from: {clothes_feature_path}")
         team_features = torch.load(clothes_feature_path)
     
-    # Initialize global dictionary once outside main loop if not already done
-    if 'team_json_records' not in globals():
-        team_json_records = defaultdict(lambda: {'frame_id': [], 'team_conf': [], 'bbox': []})
-
     while cap.isOpened():
         ret, high_resolution_image = cap.read()
         if not ret:
@@ -315,11 +503,11 @@ def run(
         if frame_idx % vid_stride != 0:
             continue
 
-        print(f"🔍 Processing frame {frame_idx}")
+        # print(f"🔍 Processing frame {frame_idx}")
 
         images, offsets = get_image_patches(high_resolution_image, crop_size=imgsz[0], overlap=0.2)
 
-        seen, windows, dt = 0, [], (Profile(), Profile(), Profile())
+        seen, windows, dt = 0, [], [Profile() for _ in range(8)]
         # for path, im, im0s, vid_cap, s in dataset:
         with dt[0]:
             batch = preprocess_images(images, device, fp16=model.fp16)
@@ -334,127 +522,140 @@ def run(
         # NMS
         with dt[2]:
             pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det) # this take a [[tensor]] and return a list of tensors
-            print("Predictions after NMS:", len(pred)) # 32
-            print(pred[0].shape) # torch.Size([0, 6])
+            # print("Predictions after NMS:", len(pred)) # 32
+            # print(pred[0].shape) # torch.Size([0, 6])
 
-        # Make a copy of the original 4K image for drawing
-        annotated_image = high_resolution_image.copy()
-        all_detections = []
-        
+        # proprocess predictions
+        with dt[3]:
+            start = time.time()  # reset timer
+            # Make a copy of the original 4K image for drawing
+            annotated_image = high_resolution_image.copy()
+            all_detections = []
+            ckp1 = time.time()  # checkpoint for copy image
 
-        # Process predictions
-        for i, det in enumerate(pred):  # per image
-            x_offset, y_offset = offsets[i]
-            if det is not None and len(det):
-                # Remap to original image coordinates
-                det[:, [0, 2]] += x_offset
-                det[:, [1, 3]] += y_offset
-                all_detections.append(det)
+            # Process predictions
+            for i, det in enumerate(pred):  # per image
+                x_offset, y_offset = offsets[i]
+                if det is not None and len(det):
+                    # Remap to original image coordinates
+                    det[:, [0, 2]] += x_offset
+                    det[:, [1, 3]] += y_offset
+                    all_detections.append(det)
+            ckp2 = time.time()  # checkpoint for remap
+                
+            if all_detections:
+                combined = torch.cat(all_detections, dim=0)  # shape [Total_Detections, 6]
+            else:
+                combined = torch.empty((0, 6), dtype=torch.float32, device=model.device)
+            # print the shape of combined
+            # print("Combined shape:", combined.shape)
+
+            ckp3 = time.time()  # checkpoint for combine
+            # Apply global NMS
+            if combined.shape[0] > 0:
+                final = simple_global_nms(combined, iou_thres=iou_thres, max_det=max_det)
+                ckp4 = time.time()  # checkpoint for NMS
+                final = remove_boxes_with_numba(final, area_ratio_thresh=0.6, containment_thresh=0.9)
+                ckp5 = time.time()  # checkpoint for remove enclosed boxes
+            else:
+                final = []
+            ckp6 = time.time()  # checkpoint for NMS
+
+            # print(f"copy 4k imge took {ckp1 - start:.2f}s, remap {ckp2 - ckp1:.2f}s, combine {ckp3 - ckp2:.2f}s,  Gobal NMS {ckp4 - ckp3:.2f}s, remove enclosed boxes {ckp5 - ckp4:.2f}s, total {ckp6 - start:.2f}s")
+            # copy 4k imge took 0.00s, remap 0.00s, combine 0.00s,  Gobal NMS 0.00s, remove enclosed boxes 0.75s, total 0.75s
+
+        with dt[4]:
+            # the shape of final is [N, 6] where N is the number of detections, the 6 columns are [x1, y1, x2, y2, conf, cls]
+            # print("Final detections after global NMS & remove enclosed boxes:", final.shape if isinstance(final, torch.Tensor) else len(final))
+            # Filter by class
+            person_dets = final[final[:, 5] == 0]  # class 0 for person
+            ball_dets = final[final[:, 5] == 32]   # example class id for ball (change if needed)
+            person_dets_np = person_dets[:, :5].cpu().numpy() if person_dets.numel() else np.empty((0, 5))
+            ball_dets_np = ball_dets[:, :5].cpu().numpy() if ball_dets.numel() else np.empty((0, 5))
+
+            online_persons = person_tracker.update(person_dets_np, [height, width], [height, width])
+            online_balls = ball_tracker.update(ball_dets_np, [height, width], [height, width])
+
+            # print("Online persons after tracking:", len(online_persons))
+            # print("Online ball after tracking:", len(online_balls))
             
-        if all_detections:
-            combined = torch.cat(all_detections, dim=0)  # shape [Total_Detections, 6]
-        else:
-            combined = torch.empty((0, 6), dtype=torch.float32, device=model.device)
-        # print the shape of combined
-        print("Combined shape:", combined.shape)
-        # Apply global NMS
-        if combined.shape[0] > 0:
-            final = simple_global_nms(combined, iou_thres=iou_thres, max_det=max_det)
-            final = remove_partially_enclosed_boxes_same_class(final, area_ratio_thresh=0.6, containment_thresh=0.9)
-        else:
-            final = []
+            # Store all crop tensors and track info for matching
+            crop_tensors = []
+            crop_track_ids = []
+            frame_crop_features = []
 
-        # the shape of final is [N, 6] where N is the number of detections, the 6 columns are [x1, y1, x2, y2, conf, cls]
-        print("Final detections after global NMS & remove enclosed boxes:", final.shape if isinstance(final, torch.Tensor) else len(final))
-        # Filter by class
-        person_dets = final[final[:, 5] == 0]  # class 0 for person
-        ball_dets = final[final[:, 5] == 32]   # example class id for ball (change if needed)
-        person_dets_np = person_dets[:, :5].cpu().numpy() if person_dets.numel() else np.empty((0, 5))
-        ball_dets_np = ball_dets[:, :5].cpu().numpy() if ball_dets.numel() else np.empty((0, 5))
+            # Format detections with track ID
+            final_detections = []
+            for t in online_persons:
+                tlbr = t.tlbr  # (x1, y1, x2, y2)
+                track_id = t.track_id
+                conf = t.score
+                cls = 0  # hardcode as person
+                final_detections.append((tlbr[0], tlbr[1], tlbr[2], tlbr[3], conf, cls, track_id))
 
-        online_persons = person_tracker.update(person_dets_np, [height, width], [height, width])
-        online_balls = ball_tracker.update(ball_dets_np, [height, width], [height, width])
+                # Crop the clothing region
+                x1, y1, x2, y2 = map(int, [tlbr[0], tlbr[1], tlbr[2], tlbr[3]])
+                crop_img = crop_clothing_region(high_resolution_image, (x1, y1, x2, y2))
+                if crop_img.size == 0:
+                    continue  # skip empty crops
+                pil_img = Image.fromarray(cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB))
+                img_tensor = reid_transform(pil_img)
+                crop_tensors.append(img_tensor)
+                crop_track_ids.append(track_id) # may not be required, cause the index of crop_tensors is first N element of final_detections
 
-        # print("Online persons after tracking:", len(online_persons))
-        # print("Online ball after tracking:", len(online_balls))
-        
-        # Store all crop tensors and track info for matching
-        crop_tensors = []
-        crop_track_ids = []
-        frame_crop_features = []
+            for t in online_balls:
+                tlbr = t.tlbr
+                track_id = t.track_id
+                conf = t.score
+                cls = 32  # hardcode as ball
+                final_detections.append((tlbr[0], tlbr[1], tlbr[2], tlbr[3], conf, cls, track_id))
 
-        # Format detections with track ID
-        final_detections = []
-        for t in online_persons:
-            tlbr = t.tlbr  # (x1, y1, x2, y2)
-            track_id = t.track_id
-            conf = t.score
-            cls = 0  # hardcode as person
-            final_detections.append((tlbr[0], tlbr[1], tlbr[2], tlbr[3], conf, cls, track_id))
+        with dt[5]:
+            # Batch ReID feature extraction
+            if crop_tensors:
+                batch_tensor = torch.stack(crop_tensors).to(device)
+                with torch.no_grad():
+                    batch_features = re_id_model(batch_tensor)
+                frame_crop_features.extend(batch_features.cpu())  # [N, 512]
+            # print(f"Extracted {len(frame_crop_features)} ReID features from crops.")
 
-            # Crop the clothing region
-            x1, y1, x2, y2 = map(int, [tlbr[0], tlbr[1], tlbr[2], tlbr[3]])
-            crop_img = crop_clothing_region(high_resolution_image, (x1, y1, x2, y2))
-            if crop_img.size == 0:
-                continue  # skip empty crops
-            pil_img = Image.fromarray(cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB))
-            img_tensor = reid_transform(pil_img)
-            crop_tensors.append(img_tensor)
-            crop_track_ids.append(track_id) # may not be required, cause the index of crop_tensors is first N element of final_detections
+            # do clothing matching
+            if clothes_feature_path and os.path.exists(clothes_feature_path):
+                # print(f"🔍 Matching clothing features with team data from: {clothes_feature_path}")
+                team_scores = match_features_to_teams_in_memory(frame_crop_features, team_features)
 
-        for t in online_balls:
-            tlbr = t.tlbr
-            track_id = t.track_id
-            conf = t.score
-            cls = 32  # hardcode as ball
-            final_detections.append((tlbr[0], tlbr[1], tlbr[2], tlbr[3], conf, cls, track_id))
+            # Update tracking JSON records
+            # Track current feature index to sync with crop detections
+            feature_index = 0
 
-        # Batch ReID feature extraction
-        if crop_tensors:
-            batch_tensor = torch.stack(crop_tensors).to(device)
-            with torch.no_grad():
-                batch_features = re_id_model(batch_tensor)
-            frame_crop_features.extend(batch_features.cpu())  # [N, 512]
-        print(f"Extracted {len(frame_crop_features)} ReID features from crops.")
+            for det in final_detections:
+                x1, y1, x2, y2, conf, cls, track_id = det
+                bbox_out = [int(x1), int(y1), int(x2), int(y2), float(conf)]
 
-        # do clothing matching
-        if clothes_feature_path and os.path.exists(clothes_feature_path):
-            print(f"🔍 Matching clothing features with team data from: {clothes_feature_path}")
-            team_scores = match_features_to_teams_in_memory(frame_crop_features, team_features)
+                if cls == 0:                              # person
+                    if feature_index < len(team_scores):
+                        team_conf = {k: float(v)
+                                    for k, v in team_scores[feature_index].items()}
+                        feature_index += 1
+                    else:
+                        team_conf = {}
+                else:                                     # ball
+                    team_conf = {}
 
-        # Update tracking JSON records
-        # Track current feature index to sync with crop detections
-        feature_index = 0
+                # ⭐ update the streamer
+                json_streamer.update(track_id, frame_idx, bbox_out, team_conf)
 
-        for det in final_detections:
-            x1, y1, x2, y2, conf, cls, track_id = det
-            if track_id not in team_json_records:
-                team_json_records[track_id] = {
-                    'track_id': track_id,
-                    'frame_id': [],
-                    'team_conf': [],
-                    'bbox': []
-                }
+        with dt[6]:
+            # flush every N frames
+            json_streamer.maybe_flush(frame_idx)
 
-            team_json_records[track_id]['frame_id'].append(frame_idx)
-            team_json_records[track_id]['bbox'].append([int(x1), int(y1), int(x2), int(y2), float(conf)])
+        with dt[7]:
+            # print("team_scores: ",team_scores, )
+            draw_detections(annotated_image, final_detections, names)
+            out.write(annotated_image)
 
-            if cls == 0:  # Person
-                if feature_index < len(team_scores):
-                    # Ensure all scores are float for JSON
-                    team_conf = {k: float(v) for k, v in team_scores[feature_index].items()}
-                    team_json_records[track_id]['team_conf'].append(team_conf)
-                    feature_index += 1
-                else:
-                    # Append empty if match score is missing
-                    team_json_records[track_id]['team_conf'].append({})
-            elif cls == 32:
-                # Add empty team_conf to maintain same structure
-                team_json_records[track_id]['team_conf'].append({})
-
-        # print("team_scores: ",team_scores, )
-        draw_detections(annotated_image, final_detections, names)
-        out.write(annotated_image)
+        total_time = sum(dt[i].dt for i in range(len(dt)))
+        print(f"Frame {frame_idx} total use: {total_time} (preprocessed: {dt[0].dt:.2f}s, inference: {dt[1].dt:.2f}s, NMS: {dt[2].dt:.2f}s, proprocess: {dt[3].dt:.2f}s, tracking & crop patches: {dt[4].dt:.2f}s, ReID: {dt[5].dt:.2f}s, Json: {dt[6].dt:.2f}s, Draw: {dt[7].dt:.2f}s)")
 
         if view_img:
             cv2.imshow("YOLO Detection", annotated_image)
@@ -466,10 +667,9 @@ def run(
     cv2.destroyAllWindows()
     print(f"✅ Saved video to: {output_path}")
 
-    output_data = list(team_json_records.values())
-    with open(output_json_path, 'w') as f:
-        json.dump(output_data, f, indent=4)
-    print(f"✅ Saved team tracking JSON to {output_json_path}")
+    # close streamer → writes remaining tracks & final ‘]’
+    json_streamer.close()
+    print(f"✅ Streamed team tracking JSON to {output_json_path}")
 
 
 def parse_opt():
