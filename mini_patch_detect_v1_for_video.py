@@ -31,6 +31,7 @@ from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, smart_inference_mode
 from collections import defaultdict
 from numba import njit
+from homography_matrix import compute_homography, apply_homography_to_point
 
 def match_features_to_teams_in_memory(crop_features, team_data):
     team_features = team_data['features']
@@ -350,7 +351,8 @@ class TrackJsonStreamer:
             "track_id": None,   # filled on first update
             "frame_id": [],
             "team_conf": [],
-            "bbox": []
+            "bbox": [],
+            "projected": [],      # (x, y) projected point
         })
         self.last_seen     = {}          # track_id -> last frame
         self._first_write  = True        # for '[' and commas
@@ -358,13 +360,14 @@ class TrackJsonStreamer:
         self.fh = self.out_path.open("w")
         self.fh.write("[\n")             # start JSON array
 
-    def update(self, tid, frame_idx, bbox, team_conf):
+    def update(self, tid, frame_idx, bbox, team_conf, proj_pt):
         rec = self.records[tid]
         if rec["track_id"] is None:
             rec["track_id"] = tid
         rec["frame_id"].append(frame_idx)
         rec["team_conf"].append(team_conf)
         rec["bbox"].append(bbox)
+        rec["projected"].append(proj_pt)
         self.last_seen[tid] = frame_idx
 
     def maybe_flush(self, frame_idx):
@@ -403,6 +406,8 @@ def run(
         conf_thres=0.25,  # confidence threshold
         iou_thres=0.45,  # NMS IOU threshold
         max_det=1000,  # maximum detections per image
+        homography_src_points = None,  # image coordinate system for homography
+        homography_dst_points= None,  # destination points for homography
         device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
         view_img=False,  # show results
         save_txt=False,  # save results to *.txt
@@ -424,6 +429,17 @@ def run(
         dnn=False,  # use OpenCV DNN for ONNX inference
         vid_stride=1,  # video frame-rate stride
 ):
+    
+    # check homography points
+    if homography_src_points is None or homography_dst_points is None:
+        raise ValueError("Both homography source and destination points must be provided.")
+    if len(homography_src_points) != 4 or len(homography_dst_points) != 4:
+        raise ValueError("Homography points must be lists of 4 tuples.")
+    # Convert points to numpy arrays
+    H = compute_homography(
+        np.array(homography_src_points, dtype=np.float32),
+        np.array(homography_dst_points, dtype=np.float32)
+    )[0]
     
     # Create tracker args manually
     tracker_args = SimpleNamespace(
@@ -632,6 +648,11 @@ def run(
                 x1, y1, x2, y2, conf, cls, track_id = det
                 bbox_out = [int(x1), int(y1), int(x2), int(y2), float(conf)]
 
+                # Compute projection here
+                center_x = (x1 + x2) / 2 
+                center_y = y2
+                proj_pt = apply_homography_to_point((center_x, center_y), H)
+
                 if cls == 0:                              # person
                     if feature_index < len(team_scores):
                         team_conf = {k: float(v)
@@ -643,12 +664,14 @@ def run(
                     team_conf = {}
 
                 # ⭐ update the streamer
-                json_streamer.update(track_id, frame_idx, bbox_out, team_conf)
+                json_streamer.update(track_id, frame_idx, bbox_out, team_conf, proj_pt)
 
+        # save json every N frames
         with dt[6]:
             # flush every N frames
             json_streamer.maybe_flush(frame_idx)
 
+        # Draw results
         with dt[7]:
             # print("team_scores: ",team_scores, )
             draw_detections(annotated_image, final_detections, names)
@@ -682,6 +705,10 @@ def parse_opt():
     parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
+    parser.add_argument('--homography-src-points', type=int, nargs=8, default=[0, 0, 1, 0, 1, 1, 0, 1],
+                        help='source points for homography transformation (x1, y1, x2, y2, x3, y3, x4, y4)')
+    parser.add_argument('--homography-dst-points', type=int, nargs=8, default=[0, 0, 1, 0, 1, 1, 0, 1],
+                        help='destination points for homography transformation (x1, y1, x2, y2, x3, y3, x4, y4)')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--view-img', action='store_true', help='show results')
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
@@ -704,6 +731,10 @@ def parse_opt():
     parser.add_argument('--vid-stride', type=int, default=1, help='video frame-rate stride')
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
+    opt.homography_src_points = np.array(opt.homography_src_points, dtype=np.float32).reshape(4, 2)
+    opt.homography_dst_points = np.array(opt.homography_dst_points, dtype=np.float32).reshape(4, 2)
+    opt.homography_src_points = opt.homography_src_points.tolist()
+    opt.homography_dst_points = opt.homography_dst_points.tolist()
     print_args(vars(opt))
     return opt
 
