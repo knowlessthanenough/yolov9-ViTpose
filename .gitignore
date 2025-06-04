@@ -4,3 +4,5 @@
 *.pt
 *.mp4
 runs/*
+*.MOV
+*.npy
