@@ -32,6 +32,7 @@ from utils.torch_utils import select_device, smart_inference_mode
 from collections import defaultdict
 from numba import njit
 from homography_matrix import compute_homography, apply_homography_to_point
+from idenfity_goalkeeper import extract_color_histogram_with_specific_background_color, compare_histograms, match_histograms_to_teams, load_team_histograms_from_folder
 
 def match_features_to_teams_in_memory(crop_features, team_data):
     team_features = team_data['features']
@@ -57,7 +58,7 @@ def match_features_to_teams_in_memory(crop_features, team_data):
     return results
 
 def crop_clothing_region(image, bbox, 
-                         top_ratio=0.25, bottom_ratio=0.55, 
+                         top_ratio=0.25, bottom_ratio=0.45, 
                          left_ratio=0.3, right_ratio=0.7):
     """
     Crop only the clothing region (centered shirt area) from a person bounding box.
@@ -401,7 +402,7 @@ def run(
         weights=ROOT / 'yolo.pt',  # model path or triton URL
         source=ROOT / 'data/images',  # file/dir/URL/glob/screen/0(webcam)
         data=ROOT / 'data/coco.yaml',  # dataset.yaml path
-        clothes_feature_path=ROOT / 'reid/reid_test_image/team/team.pt',  # path to clothing features
+        clothes_folder_path=ROOT / '',  # path to clothing features
         imgsz=(640, 640),  # inference size (height, width)
         conf_thres=0.25,  # confidence threshold
         iou_thres=0.45,  # NMS IOU threshold
@@ -464,23 +465,6 @@ def run(
     stride, names, pt = model.stride, model.names, model.pt
     imgsz = check_img_size(imgsz, s=stride)  # check image size
 
-    #load reid model
-    re_id_batch_size = 32
-    re_id_model = torchreid.models.build_model(
-    name='osnet_x1_0',
-    num_classes=1000,
-    pretrained=True
-    )
-    re_id_model.eval().to(device)
-
-    # Preprocessing transform
-    reid_transform = T.Compose([
-    T.Resize((256, 128)),
-    T.ToTensor(),
-    T.Normalize(mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225])
-    ])
-
     cap = cv2.VideoCapture(source)
     fps = cap.get(cv2.CAP_PROP_FPS) if cap.isOpened() else 30  # default to 30 FPS if not available
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -506,9 +490,10 @@ def run(
     person_tracker = BYTETracker(tracker_args, frame_rate=tracker_args.fps)
 
     # load the team reference features
-    if clothes_feature_path and os.path.exists(clothes_feature_path):
-        print(f"🔍 Loading clothing features from: {clothes_feature_path}")
-        team_features = torch.load(clothes_feature_path)
+    if clothes_folder_path and os.path.exists(clothes_folder_path):
+        print(f"🔍 Loading clothing features from: {clothes_folder_path}")
+        team_histograms = load_team_histograms_from_folder(clothes_folder_path)
+        print(f"✅ Loaded {len(team_histograms)} team histograms.")
     
     while cap.isOpened():
         ret, high_resolution_image = cap.read()
@@ -596,7 +581,7 @@ def run(
             # print("Online ball after tracking:", len(online_balls))
             
             # Store all crop tensors and track info for matching
-            crop_tensors = []
+            crop_hists = []
             crop_track_ids = []
             frame_crop_features = []
 
@@ -611,12 +596,12 @@ def run(
 
                 # Crop the clothing region
                 x1, y1, x2, y2 = map(int, [tlbr[0], tlbr[1], tlbr[2], tlbr[3]])
-                crop_img = crop_clothing_region(high_resolution_image, (x1, y1, x2, y2))
+                crop_img = crop_clothing_region(high_resolution_image, (x1, y1, x2, y2),top_ratio=0.2, bottom_ratio=0.5, left_ratio=0.25, right_ratio=0.75)
                 if crop_img.size == 0:
                     continue  # skip empty crops
-                pil_img = Image.fromarray(cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB))
-                img_tensor = reid_transform(pil_img)
-                crop_tensors.append(img_tensor)
+                crop_hist = extract_color_histogram_with_specific_background_color(
+                    crop_img)  # example white mask
+                crop_hists.append(crop_hist)
                 crop_track_ids.append(track_id) # may not be required, cause the index of crop_tensors is first N element of final_detections
 
             for t in online_balls:
@@ -627,18 +612,12 @@ def run(
                 final_detections.append((tlbr[0], tlbr[1], tlbr[2], tlbr[3], conf, cls, track_id))
 
         with dt[5]:
-            # Batch ReID feature extraction
-            if crop_tensors:
-                batch_tensor = torch.stack(crop_tensors).to(device)
-                with torch.no_grad():
-                    batch_features = re_id_model(batch_tensor)
-                frame_crop_features.extend(batch_features.cpu())  # [N, 512]
-            # print(f"Extracted {len(frame_crop_features)} ReID features from crops.")
-
-            # do clothing matching
-            if clothes_feature_path and os.path.exists(clothes_feature_path):
-                # print(f"🔍 Matching clothing features with team data from: {clothes_feature_path}")
-                team_scores = match_features_to_teams_in_memory(frame_crop_features, team_features)
+            if crop_hists:  # crop_images = list of color histograms for each person
+                # Load team histograms from file (or define in code)
+                if team_histograms:
+                    team_scores = match_histograms_to_teams(crop_hists, team_histograms)  # white mask example
+                else:
+                    team_scores = [{} for _ in crop_hists]
 
             # Update tracking JSON records
             # Track current feature index to sync with crop detections
@@ -673,9 +652,10 @@ def run(
 
         # Draw results
         with dt[7]:
-            # print("team_scores: ",team_scores, )
-            draw_detections(annotated_image, final_detections, names)
-            out.write(annotated_image)
+            if not nosave:
+                # print("team_scores: ",team_scores, )
+                draw_detections(annotated_image, final_detections, names)
+                out.write(annotated_image)
 
         total_time = sum(dt[i].dt for i in range(len(dt)))
         print(f"Frame {frame_idx} total use: {total_time} (preprocessed: {dt[0].dt:.2f}s, inference: {dt[1].dt:.2f}s, NMS: {dt[2].dt:.2f}s, proprocess: {dt[3].dt:.2f}s, tracking & crop patches: {dt[4].dt:.2f}s, ReID: {dt[5].dt:.2f}s, Json: {dt[6].dt:.2f}s, Draw: {dt[7].dt:.2f}s)")
@@ -700,7 +680,7 @@ def parse_opt():
     parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolo.pt', help='model path or triton URL')
     parser.add_argument('--source', type=str, default=ROOT / 'data/images', help='file/dir/URL/glob/screen/0(webcam)')
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='(optional) dataset.yaml path')
-    parser.add_argument('--clothes-feature-path', type=str, default=ROOT / 'reid/reid_test_image/team/team.pt', help='path to clothing features for ReID')
+    parser.add_argument('--clothes-folder-path', type=str, default=ROOT / '', help='path to clothing features for assigning team IDs')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
@@ -749,4 +729,4 @@ if __name__ == "__main__":
     main(opt)
 
 # Example usage:
-# python3 mini_patch_detect.py --source './data/images/4k_video.mov' --img 640 --device 0 --weights './weight/yolov9-s.pt' --nosave --classes 0 32
+# python3 mini_patch_detect_v1_for_video.py --source './data/video/test_sample/4k_football_test.mov' --img 640 --device 0 --weights './weight/yolov9-s.pt' --name test_4k --classes 0 32 --clothes-feature-path reid/reid_test_image/team/feature.pt --homography-src-points 172 1104 2101 895 3800 1021 3458 2057 --homography-dst-points 530 0 530 660 1060 660 1060 0

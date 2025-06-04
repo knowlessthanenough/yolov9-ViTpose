@@ -4,8 +4,9 @@ import numpy as np
 import argparse
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+import os
 
-def extract_color_histogram_with_specific_background_color(image, mask=None, bins=(50, 60, 60), ignore_color_range=None):
+def extract_color_histogram_with_specific_background_color_old(image, mask=None, bins=(50, 60, 60), ignore_color_range=None):
     """
     Extract the color histogram from an image in HSV format, with the option to ignore specific color ranges.
 
@@ -18,6 +19,13 @@ def extract_color_histogram_with_specific_background_color(image, mask=None, bin
     Returns:
         np.ndarray: Normalized color histogram.
     """
+    # multi input format, if image iis a path, read the image, if it is a numpy array, use it directly
+    if isinstance(image, str):
+        image = cv2.imread(image)
+        if image is None:
+            raise ValueError(f"Could not read image from {image}")
+    elif not isinstance(image, np.ndarray):
+        raise TypeError("Image must be a file path or a numpy array.")
     # Convert image to HSV
     hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
@@ -39,6 +47,56 @@ def extract_color_histogram_with_specific_background_color(image, mask=None, bin
     # Normalize the histogram
     hist = hist / np.sum(hist)  # Normalize to make it independent of image size
     return hist
+
+def extract_color_histogram_with_specific_background_color(
+    image, 
+    mask=None, 
+    bins=(50, 60, 60), 
+    ignore_color_range=None
+):
+    """
+    Extract a color histogram from an image in HSV format, with the option to ignore specific color ranges.
+
+    Args:
+        image (str | np.ndarray): Input image path or image array (BGR format).
+        mask (np.ndarray): Optional binary mask to restrict histogram region.
+        bins (tuple): Number of bins for Hue, Saturation, and Value.
+        ignore_color_range (tuple): ((low_H, low_S, low_V), (high_H, high_S, high_V)) to ignore.
+
+    Returns:
+        np.ndarray: Normalized HSV color histogram.
+    """
+    # Read from file path if necessary
+    if isinstance(image, str):
+        image = cv2.imread(image)
+        if image is None:
+            raise ValueError(f"Could not read image from path: {image}")
+    elif not isinstance(image, np.ndarray):
+        raise TypeError("Input must be a NumPy array or file path.")
+
+    # Convert to HSV color space
+    hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+    # Apply color exclusion mask if provided
+    if ignore_color_range is not None:
+        lower_bound = np.array(ignore_color_range[0], dtype=np.uint8)
+        upper_bound = np.array(ignore_color_range[1], dtype=np.uint8)
+        ignore_mask = cv2.inRange(hsv_image, lower_bound, upper_bound)
+        valid_mask = cv2.bitwise_not(ignore_mask)
+
+        if mask is not None:
+            mask = cv2.bitwise_and(mask, valid_mask)
+        else:
+            mask = valid_mask
+
+    # Calculate the histogram over masked region
+    hist = cv2.calcHist([hsv_image], [0, 1, 2], mask, bins, [0, 180, 0, 256, 0, 256])
+
+    # Normalize to sum = 1
+    hist_sum = np.sum(hist)
+    if hist_sum == 0:
+        return np.zeros_like(hist)
+    return hist / hist_sum
 
 
 def extract_color_histogram_from_rotated_skelton(image, skeleton_keypoints, bins=(50, 60, 60), expand_ratio=0.2, ignore_skin=False):
@@ -195,48 +253,75 @@ def load_histogram(file_path):
     return hist
 
 
-# if __name__ == "__main__":
-#     skeleton_keypoints = {
-#         "left_shoulder": (1442 , 384),
-#         "right_shoulder": (1548 ,362),
-#         "left_hip": (1482, 472),
-#         "right_hip": (1557, 460)
-#     }
-#     goal_keeper_image = cv2.imread("./data/images/real_goal2.jpg")
-#     #crop the image base on the skeleton keypoints
-#     left_shoulder = skeleton_keypoints["left_shoulder"]
-#     right_shoulder = skeleton_keypoints["right_shoulder"]
-#     left_hip = skeleton_keypoints["left_hip"]
-#     right_hip = skeleton_keypoints["right_hip"]
-#     # x1 = int(min(left_shoulder[0], right_shoulder[0], left_hip[0], right_hip[0]))
-#     # x2 = int(max(left_shoulder[0], right_shoulder[0], left_hip[0], right_hip[0]))
-#     # y1 = int(min(left_shoulder[1], right_shoulder[1], left_hip[1], right_hip[1]))
-#     # y2 = int(max(left_shoulder[1], right_shoulder[1], left_hip[1], right_hip[1]))
-#     # goal_keeper_image = goal_keeper_image[y1:y2, x1:x2]
-#     # cv2.imshow("goalkeeper", goal_keeper_image)
-#     # cv2.waitKey(0)
-#     goalkeeper_hist_from_skelton = extract_color_histogram_from_rotated_skelton(goal_keeper_image, skeleton_keypoints)
-#     save_histogram(goalkeeper_hist_from_skelton, "./data/histograms/real_goal2.npy")
-#     plot_hsv_histogram(goalkeeper_hist_from_skelton, bins=(50, 60, 60))
+def load_team_histograms_from_folder(folder_path, file_ext=".npy"):
+    """
+    Load all histogram .npy files from a folder and organize them by team name.
+
+    Args:
+        folder_path (str): Path to the folder containing histogram .npy files.
+        file_ext (str): Extension of the histogram files (default: '.npy').
+
+    Returns:
+        dict: {team_name: [hist1, hist2, ...]} grouped histograms per team.
+    """
+    team_histograms = {}
+
+    for file_name in os.listdir(folder_path):
+        if file_name.endswith(file_ext):
+            file_path = os.path.join(folder_path, file_name)
+            hist = np.load(file_path)
+
+            # Extract team name from the filename (assumes format like teamA_01.npy)
+            team_name = file_name.split('_')[0]
+
+            if team_name not in team_histograms:
+                team_histograms[team_name] = []
+            team_histograms[team_name].append(hist)
+
+    return team_histograms
 
 
-def main():
+def match_histograms_to_teams(crop_hists, team_histograms, method=cv2.HISTCMP_BHATTACHARYYA):
+    """
+    Compare each player's crop histogram to each team's reference histograms.
+
+    Args:
+        crop_hists (List[np.ndarray]): histograms of current detections
+        team_histograms (Dict[str, List[np.ndarray]]): team_id -> list of histograms
+
+    Returns:
+        List[Dict[str, float]]: list of team score dictionaries for each detection
+    """
+    all_scores = []
+    for hist in crop_hists:
+        scores = {}
+        for team_id, team_hist_list in team_histograms.items():
+            similarities = [
+                compare_histograms(hist, team_hist, method)
+                for team_hist in team_hist_list
+            ]
+            # You can average or take max depending on your preference
+            scores[team_id] = float(np.mean(similarities))  # or np.max(similarities)
+        all_scores.append(scores)
+    return all_scores
+
+
+def parse_opt():
     parser = argparse.ArgumentParser(description="Extract and save color histogram from an image.")
     
     parser.add_argument('--image', type=str,
                         help="Path to the goalkeeper's clothes image.")
     parser.add_argument('--histogram_save_path', type=str,
                         help="Path to save the histogram file.")
-    parser.add_argument('--bins', type=int, nargs=3, default=[50, 60, 60],
-                        help="Number of bins for H, S, and V channels.")
+    opt = parser.parse_args()
+    return opt
 
-    args = parser.parse_args()
-
+def run(image, histogram_save_path):
     # Load the image
-    goalkeeper_clothe_image = cv2.imread(args.image)
+    goalkeeper_clothe_image = cv2.imread(image)
     if goalkeeper_clothe_image is None:
-        print(f"Error: Could not load image from {args.image}")
-        return
+        print(f"Error: Could not load image from {image}")
+        exit(1)
 
     # Extract histograms, ignoring white
     goalkeeper_hist_from_image = extract_color_histogram_with_specific_background_color(goalkeeper_clothe_image)
@@ -245,9 +330,14 @@ def main():
     # plot_hsv_histogram(goalkeeper_hist_from_image, bins=tuple(args.bins))
     
     # Save the histogram
-    save_histogram(goalkeeper_hist_from_image, args.histogram_save_path)
+    save_histogram(goalkeeper_hist_from_image, histogram_save_path)
+
+def main(opt):
+    # check_requirements(exclude=('tensorboard', 'thop'))
+    run(**vars(opt))
+
 
 if __name__ == "__main__":
-    main()
-
+    opt = parse_opt()
+    main(opt)
 # python3 idenfity_goalkeeper.py --image ./data/images/goalkeeper_clothes.jpg --histogram_save_path ./data/histograms/goalkeeper_clothes.npy
