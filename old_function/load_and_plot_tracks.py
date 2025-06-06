@@ -38,7 +38,7 @@ def draw_smoothed_paths_from_json_safe(json_path, image_path, field_size=(1060, 
         if team_count:
             assigned_team = max(team_count, key=team_count.get)
             team_votes[obj['track_id']] = assigned_team
-    print("Team assignments by track_id:", team_votes)
+    # print("Team assignments by track_id:", team_votes)
 
     paths_by_team = defaultdict(list)
     for obj in data:

@@ -729,4 +729,4 @@ if __name__ == "__main__":
     main(opt)
 
 # Example usage:
-# python3 mini_patch_detect_v1_for_video.py --source './data/video/test_sample/4k_football_test.mov' --img 640 --device 0 --weights './weight/yolov9-s.pt' --name test_4k --classes 0 32 --clothes-feature-path reid/reid_test_image/team/feature.pt --homography-src-points 172 1104 2101 895 3800 1021 3458 2057 --homography-dst-points 530 0 530 660 1060 660 1060 0
+# python3 mini_patch_detect_v1_for_video.py --source './data/video/test_sample/4k_football_test.mov' --img 640 --device 0 --weights './weight/yolov9-s.pt' --name test_4k --classes 0 32 --clothes-folder-path ./data/histograms/0525_test/ --homography-src-points 172 1104 2101 895 3800 1021 3458 2057 --homography-dst-points 530 0 530 660 1060 660 1060 0
