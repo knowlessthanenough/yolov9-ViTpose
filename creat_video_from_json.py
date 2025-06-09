@@ -4,7 +4,8 @@ import cv2
 from collections import defaultdict
 from scipy.signal import savgol_filter
 import time
-from load_and_plot_tracks_combine import apply_position_smoothing, assign_team_by_majority_vote, split_track_by_team_conf
+from load_and_plot_tracks_combine import apply_position_smoothing, split_track_by_team_conf, interpolate_missing_frames, merge_tracks_with_recursion
+
 
 def create_current_dot_video(
     json_path,
@@ -15,7 +16,7 @@ def create_current_dot_video(
     smoothing_window=90,
     polyorder=2,
     max_merge_gap=30,
-    max_merge_distance=80,
+    max_merge_distance=100,
     fps=30
 ):
     # Load JSON data
@@ -72,34 +73,8 @@ def create_current_dot_video(
                 "points": np.stack([xs, ys], axis=1)
             }
 
-    # Merge tracks by distance and frame proximity
-    merged_tracks = []
-    used = set()
+    merged_tracks = merge_tracks_with_recursion(track_dict, max_merge_gap, max_merge_distance)
 
-    track_items = sorted(track_dict.items(), key=lambda x: x[1]["frames"][0])
-    for i, (tid_a, data_a) in enumerate(track_items):
-        if tid_a in used:
-            continue
-        merged = {
-            "team": data_a["team"],
-            "frames": list(data_a["frames"]),
-            "points": list(data_a["points"]),
-            "track_id": tid_a  # add this
-        }
-        used.add(tid_a)
-
-        for j in range(i + 1, len(track_items)):
-            tid_b, data_b = track_items[j]
-            if tid_b in used or data_a["team"] != data_b["team"]:
-                continue
-            if 0 < data_b["frames"][0] - merged["frames"][-1] <= max_merge_gap:
-                dist = np.linalg.norm(np.array(merged["points"][-1]) - np.array(data_b["points"][0]))
-                if dist <= max_merge_distance:
-                    merged["frames"].extend(data_b["frames"])
-                    merged["points"].extend(data_b["points"])
-                    used.add(tid_b)
-
-        merged_tracks.append(merged)
 
     # Set up video writer
     writer = cv2.VideoWriter(output_video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
@@ -128,6 +103,8 @@ def create_current_dot_video(
                 x, y = int(points[i][0]), field_size[1] - int(points[i][1])
                 color = team_colors.get(track["team"], (128, 128, 128))
                 cv2.circle(frame_img, (x, y), 5, color, -1)
+                cv2.putText(frame_img, str(track["track_id"]), (x + 6, y - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
         writer.write(frame_img)
 
     writer.release()

@@ -10,6 +10,33 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 import time
 from homography_matrix import compute_homography
 from filterpy.kalman import KalmanFilter
+from typing import List, Dict, Any
+
+
+def interpolate_missing_frames(frames, points):
+    """
+    Fill in missing frames using linear interpolation.
+
+    Args:
+        frames (list[int]): Existing frame indices.
+        points (list[list[float]]): Corresponding (x, y) positions.
+
+    Returns:
+        tuple: (interpolated_frames, interpolated_points)
+    """
+    if len(frames) != len(points):
+        raise ValueError("frames and points must be the same length")
+    
+    frame_arr = np.array(frames)
+    point_arr = np.array(points)
+
+    full_frames = np.arange(frame_arr[0], frame_arr[-1] + 1)
+    x_interp = np.interp(full_frames, frame_arr, point_arr[:, 0])
+    y_interp = np.interp(full_frames, frame_arr, point_arr[:, 1])
+    
+    interpolated_points = np.stack([x_interp, y_interp], axis=1)
+
+    return full_frames.tolist(), interpolated_points.tolist()
 
 
 def smooth_and_project_bboxes_with_ekf(bboxes, H):
@@ -208,6 +235,81 @@ def split_track_by_team_conf(obj, min_segment_length=5):
     return segments
 
 
+def merge_tracks_with_recursion(track_dict: Dict[str, Dict[str, Any]],
+                                max_merge_gap: int = 5,
+                                max_merge_overlap_frames: int = 3,
+                                max_merge_distance: float = 30) -> List[Dict[str, Any]]:
+    """
+    Recursively merges track segments based on temporal and spatial proximity with optional interpolation.
+
+    Args:
+        track_dict (dict): Dictionary where key is track_id and value is a dict containing 'team', 'frames', and 'points'.
+        max_merge_gap (int): Maximum frame gap to consider for merging.
+        max_merge_distance (float): Maximum distance to consider for merging.
+
+    Returns:
+        list: List of merged track segments.
+    """
+    track_items = sorted(track_dict.items(), key=lambda x: x[1]["frames"][0])
+    merged_tracks = []
+    used = set()
+
+    for i, (tid_a, data_a) in enumerate(track_items):
+        if tid_a in used:
+            continue
+        merged = {
+            "team": data_a["team"],
+            "frames": list(data_a["frames"]),
+            "points": list(data_a["points"]),
+            "track_id": tid_a
+        }
+        used.add(tid_a)
+
+        while True:
+            best_candidate = None
+            best_dist = float('inf')
+            for j, (tid_b, data_b) in enumerate(track_items):
+                if tid_b in used or data_b["team"] != merged["team"]:
+                    continue
+                # Check if the gap is within the allowed range for merging
+                '''
+                If overlap < 0:
+                data_b starts before base_track ends → overlap
+                Allow if overlap <= max_overlap_frames
+
+                If overlap > 0:
+                data_b starts after base_track ends → gap
+                Allow if abs(overlap) <= max_merge_gap
+                '''
+                gap = data_b["frames"][0] - merged["frames"][-1]
+                if (0 <= gap <= max_merge_gap) or (0 < -gap <= max_merge_overlap_frames):
+                    dist = np.linalg.norm(np.array(merged["points"][-1]) - np.array(data_b["points"][0]))
+                    if dist <= max_merge_distance and dist < best_dist:
+                        best_candidate = (tid_b, data_b)
+                        best_dist = dist
+            if best_candidate is None:
+                break
+
+            tid_b, data_b = best_candidate
+            gap_start = merged["frames"][-1]
+            gap_end = data_b["frames"][0]
+            if gap_end - gap_start > 1:
+                interp_frames, interp_points = interpolate_missing_frames(
+                    [gap_start, gap_end],
+                    [merged["points"][-1], data_b["points"][0]]
+                )
+                merged["frames"].extend(interp_frames[1:-1])
+                merged["points"].extend(interp_points[1:-1])
+
+            merged["frames"].extend(data_b["frames"])
+            merged["points"].extend(data_b["points"])
+            used.add(tid_b)
+
+        merged_tracks.append(merged)
+
+    return merged_tracks
+
+
 def draw_merged_paths_from_json(
     json_path,
     image_path,
@@ -218,7 +320,7 @@ def draw_merged_paths_from_json(
     smoothing_window=90,
     polyorder=2,
     max_merge_gap=30,
-    max_merge_distance=80
+    max_merge_distance=100
 ):
     """
     Draw smoothed 2D trajectories from tracking JSON with optional merging of fragmented tracks.
@@ -287,34 +389,8 @@ def draw_merged_paths_from_json(
                 "points": np.stack([xs, ys], axis=1)
             }
 
-    # Merge tracks by distance and frame proximity
-    merged_tracks = []
-    used = set()
+    merged_tracks = merge_tracks_with_recursion(track_dict, max_merge_gap, max_merge_distance)
 
-    track_items = sorted(track_dict.items(), key=lambda x: x[1]["frames"][0])
-    for i, (tid_a, data_a) in enumerate(track_items):
-        if tid_a in used:
-            continue
-        merged = {
-            "team": data_a["team"],
-            "frames": list(data_a["frames"]),
-            "points": list(data_a["points"]),
-            "track_id": tid_a  # add this
-        }
-        used.add(tid_a)
-
-        for j in range(i + 1, len(track_items)):
-            tid_b, data_b = track_items[j]
-            if tid_b in used or data_a["team"] != data_b["team"]:
-                continue
-            if 0 < data_b["frames"][0] - merged["frames"][-1] <= max_merge_gap:
-                dist = np.linalg.norm(np.array(merged["points"][-1]) - np.array(data_b["points"][0]))
-                if dist <= max_merge_distance:
-                    merged["frames"].extend(data_b["frames"])
-                    merged["points"].extend(data_b["points"])
-                    used.add(tid_b)
-
-        merged_tracks.append(merged)
 
     # Draw on background
     fig, ax = plt.subplots(figsize=(12, 7))
@@ -347,7 +423,6 @@ def draw_merged_paths_from_json(
     plt.show()
     
 
-
 if  __name__ == "__main__":
     # Example usage
-    draw_merged_paths_from_json("./runs/detect/test_4k_3-crop-from-video/team_tracking.json", "./data/images/mongkok_football_field.png", smoothing_window= 90)
+    draw_merged_paths_from_json("./runs/detect/test_4k_3-crop-from-video/team_tracking.json", "./data/images/mongkok_football_field.png")
