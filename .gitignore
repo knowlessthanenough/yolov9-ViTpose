@@ -6,3 +6,4 @@
 runs/*
 *.MOV
 *.npy
+*.png

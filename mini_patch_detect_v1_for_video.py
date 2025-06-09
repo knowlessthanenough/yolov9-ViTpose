@@ -436,7 +436,7 @@ def run(
         raise ValueError("Both homography source and destination points must be provided.")
     if len(homography_src_points) != 4 or len(homography_dst_points) != 4:
         raise ValueError("Homography points must be lists of 4 tuples.")
-    # Convert points to numpy arrays
+    # Convert points to homography matrix
     H = compute_homography(
         np.array(homography_src_points, dtype=np.float32),
         np.array(homography_dst_points, dtype=np.float32)

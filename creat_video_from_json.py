@@ -4,7 +4,7 @@ import cv2
 from collections import defaultdict
 from scipy.signal import savgol_filter
 import time
-from load_and_plot_tracks_combine import apply_position_smoothing
+from load_and_plot_tracks_combine import apply_position_smoothing, assign_team_by_majority_vote, split_track_by_team_conf
 
 def create_current_dot_video(
     json_path,
@@ -12,7 +12,7 @@ def create_current_dot_video(
     output_video_path,
     field_size=(1060, 660),
     min_track_length=5,
-    smoothing_window=7,
+    smoothing_window=90,
     polyorder=2,
     max_merge_gap=30,
     max_merge_distance=80,
@@ -29,63 +29,76 @@ def create_current_dot_video(
     bg_img = cv2.resize(bg_img, field_size)
     height, width, _ = bg_img.shape
 
-    # Assign team labels by majority vote
-    team_votes = {}
-    for obj in data:
-        vote = defaultdict(float)
-        for conf in obj['team_conf']:
-            for k, v in conf.items():
-                vote[k] += v
-        team_votes[obj['track_id']] = max(vote, key=vote.get) if vote else "ball"
-
-    # Extract smoothed tracks
+    # Collect and smooth trajectories
     track_dict = {}
     for obj in data:
-        tid = obj['track_id']
-        frames = obj['frame_id']
-        proj = obj.get('projected', [])
-        pts = np.array([pt for pt in proj if pt is not None])
-        if len(pts) < min_track_length:
-            continue
-        xs, ys = pts[:, 0], pts[:, 1]
-        in_bounds = (xs >= 0) & (xs <= field_size[0]) & (ys >= 0) & (ys <= field_size[1])
-        if in_bounds.sum() < min_track_length:
-            continue
-        xs, ys = apply_position_smoothing(
-            xs[in_bounds], ys[in_bounds],
-            method='savgol',
-            window_size=smoothing_window,
-            polyorder=polyorder
-        )
-        frs = np.array(frames)[in_bounds]
-        if len(xs) >= smoothing_window:
-            xs = savgol_filter(xs, smoothing_window, polyorder)
-            ys = savgol_filter(ys, smoothing_window, polyorder)
-        track_dict[tid] = {
-            "team": team_votes.get(tid, "ball"),
-            "frames": frs,
-            "points": np.stack([xs, ys], axis=1)
-        }
+        split_objects = split_track_by_team_conf(obj, min_segment_length=20)
 
-    # Merge tracks with the same team, based on proximity and frame gap
+        for split_obj in split_objects:
+            tid = split_obj['track_id']
+            frames = split_obj['frame_id']
+            projected_points = split_obj.get('projected', [])
+
+            if len(projected_points) < min_track_length:
+                continue
+
+            # projected_points = smooth_and_project_bboxes_with_ekf(bbox_sequence, H)
+
+            pts = np.array([pt for pt in projected_points if pt is not None])
+            if len(pts) < min_track_length:
+                continue
+
+            xs, ys = pts[:, 0], pts[:, 1]
+            in_bounds = (xs >= 0) & (xs <= field_size[0]) & (ys >= 0) & (ys <= field_size[1])
+            if in_bounds.sum() < min_track_length:
+                continue
+
+            xs, ys = xs[in_bounds], ys[in_bounds]
+            frs = np.array(frames)[in_bounds]
+
+            xs, ys = apply_position_smoothing(
+                xs, ys,
+                method='savgol',
+                window_size=smoothing_window,
+                polyorder=polyorder,
+                max_step=20
+            )
+
+            # print(f"Track {tid} smoothed: {len(xs)} points after smoothing")
+            # print(split_obj.get("team"))
+            track_dict[tid] = {
+                "team": split_obj.get("team", "ball"),
+                "frames": frs,
+                "points": np.stack([xs, ys], axis=1)
+            }
+
+    # Merge tracks by distance and frame proximity
     merged_tracks = []
     used = set()
+
     track_items = sorted(track_dict.items(), key=lambda x: x[1]["frames"][0])
-    for i, (tid_a, a) in enumerate(track_items):
+    for i, (tid_a, data_a) in enumerate(track_items):
         if tid_a in used:
             continue
-        merged = {"track_id": tid_a, "team": a["team"], "frames": list(a["frames"]), "points": list(a["points"])}
+        merged = {
+            "team": data_a["team"],
+            "frames": list(data_a["frames"]),
+            "points": list(data_a["points"]),
+            "track_id": tid_a  # add this
+        }
         used.add(tid_a)
+
         for j in range(i + 1, len(track_items)):
-            tid_b, b = track_items[j]
-            if tid_b in used or a["team"] != b["team"]:
+            tid_b, data_b = track_items[j]
+            if tid_b in used or data_a["team"] != data_b["team"]:
                 continue
-            if 0 < b["frames"][0] - merged["frames"][-1] <= max_merge_gap:
-                dist = np.linalg.norm(np.array(merged["points"][-1]) - np.array(b["points"][0]))
+            if 0 < data_b["frames"][0] - merged["frames"][-1] <= max_merge_gap:
+                dist = np.linalg.norm(np.array(merged["points"][-1]) - np.array(data_b["points"][0]))
                 if dist <= max_merge_distance:
-                    merged["frames"].extend(b["frames"])
-                    merged["points"].extend(b["points"])
+                    merged["frames"].extend(data_b["frames"])
+                    merged["points"].extend(data_b["points"])
                     used.add(tid_b)
+
         merged_tracks.append(merged)
 
     # Set up video writer
