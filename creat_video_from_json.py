@@ -4,7 +4,7 @@ import cv2
 from collections import defaultdict
 from scipy.signal import savgol_filter
 import time
-from load_and_plot_tracks_combine import apply_position_smoothing, split_track_by_team_conf, interpolate_missing_frames, merge_tracks_with_recursion
+from load_and_plot_tracks_combine import load_and_merge_tracks
 
 
 def create_current_dot_video(
@@ -19,9 +19,6 @@ def create_current_dot_video(
     max_merge_distance=100,
     fps=30
 ):
-    # Load JSON data
-    with open(json_path) as f:
-        data = json.load(f)
 
     # Load and resize background
     bg_img = cv2.imread(image_path)
@@ -30,51 +27,15 @@ def create_current_dot_video(
     bg_img = cv2.resize(bg_img, field_size)
     height, width, _ = bg_img.shape
 
-    # Collect and smooth trajectories
-    track_dict = {}
-    for obj in data:
-        split_objects = split_track_by_team_conf(obj, min_segment_length=20)
-
-        for split_obj in split_objects:
-            tid = split_obj['track_id']
-            frames = split_obj['frame_id']
-            projected_points = split_obj.get('projected', [])
-
-            if len(projected_points) < min_track_length:
-                continue
-
-            # projected_points = smooth_and_project_bboxes_with_ekf(bbox_sequence, H)
-
-            pts = np.array([pt for pt in projected_points if pt is not None])
-            if len(pts) < min_track_length:
-                continue
-
-            xs, ys = pts[:, 0], pts[:, 1]
-            in_bounds = (xs >= 0) & (xs <= field_size[0]) & (ys >= 0) & (ys <= field_size[1])
-            if in_bounds.sum() < min_track_length:
-                continue
-
-            xs, ys = xs[in_bounds], ys[in_bounds]
-            frs = np.array(frames)[in_bounds]
-
-            xs, ys = apply_position_smoothing(
-                xs, ys,
-                method='savgol',
-                window_size=smoothing_window,
-                polyorder=polyorder,
-                max_step=20
-            )
-
-            # print(f"Track {tid} smoothed: {len(xs)} points after smoothing")
-            # print(split_obj.get("team"))
-            track_dict[tid] = {
-                "team": split_obj.get("team", "ball"),
-                "frames": frs,
-                "points": np.stack([xs, ys], axis=1)
-            }
-
-    merged_tracks = merge_tracks_with_recursion(track_dict, max_merge_gap, max_merge_distance)
-
+    merged_tracks = load_and_merge_tracks(
+        json_path=json_path,
+        field_size=field_size,
+        min_track_length=min_track_length,
+        smoothing_window=smoothing_window,
+        polyorder=polyorder,
+        max_merge_gap=max_merge_gap,
+        max_merge_distance=max_merge_distance
+    )
 
     # Set up video writer
     writer = cv2.VideoWriter(output_video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))

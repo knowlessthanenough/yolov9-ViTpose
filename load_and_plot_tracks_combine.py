@@ -10,7 +10,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 import time
 from homography_matrix import compute_homography
 from filterpy.kalman import KalmanFilter
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 
 def interpolate_missing_frames(frames, points):
@@ -235,6 +235,28 @@ def split_track_by_team_conf(obj, min_segment_length=5):
     return segments
 
 
+def interpolate_full_track(frames: List[int], points: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Interpolate full track to fill in all missing frames using linear interpolation.
+
+    Args:
+        frames (List[int]): List of frame indices.
+        points (np.ndarray): Corresponding points (N, 2) for each frame.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: Interpolated frames and points (in same order).
+    """
+    if len(frames) < 2:
+        return np.array(frames), points
+
+    all_frames = np.arange(frames[0], frames[-1] + 1)
+    xs_interp = np.interp(all_frames, frames, points[:, 0])
+    ys_interp = np.interp(all_frames, frames, points[:, 1])
+    full_points = np.stack([xs_interp, ys_interp], axis=1)
+
+    return all_frames, full_points
+
+
 def merge_tracks_with_recursion(track_dict: Dict[str, Dict[str, Any]],
                                 max_merge_gap: int = 5,
                                 max_merge_overlap_frames: int = 3,
@@ -291,36 +313,40 @@ def merge_tracks_with_recursion(track_dict: Dict[str, Dict[str, Any]],
                 break
 
             tid_b, data_b = best_candidate
-            gap_start = merged["frames"][-1]
-            gap_end = data_b["frames"][0]
-            if gap_end - gap_start > 1:
-                interp_frames, interp_points = interpolate_missing_frames(
-                    [gap_start, gap_end],
-                    [merged["points"][-1], data_b["points"][0]]
-                )
-                merged["frames"].extend(interp_frames[1:-1])
-                merged["points"].extend(interp_points[1:-1])
+            # gap_start = merged["frames"][-1]
+            # gap_end = data_b["frames"][0]
+            # if gap_end - gap_start > 1:
+            #     interp_frames, interp_points = interpolate_missing_frames(
+            #         [gap_start, gap_end],
+            #         [merged["points"][-1], data_b["points"][0]]
+            #     )
+            #     merged["frames"].extend(interp_frames[1:-1])
+            #     merged["points"].extend(interp_points[1:-1])
 
             merged["frames"].extend(data_b["frames"])
             merged["points"].extend(data_b["points"])
             used.add(tid_b)
 
         merged_tracks.append(merged)
+        for track in merged_tracks:
+            frames, points = interpolate_full_track(track["frames"], np.array(track["points"]))
+            track["frames"] = frames
+            track["points"] = points
 
     return merged_tracks
 
 
-def draw_merged_paths_from_json(
+def load_and_merge_tracks(
     json_path,
-    image_path,
-    # homography_src_points = None,  # image coordinate system for homography
-    # homography_dst_points= None,  # destination points for homography
     field_size=(1060, 660),
-    min_track_length=5,
+    min_track_length=10,
     smoothing_window=90,
     polyorder=2,
+    max_step=20,
     max_merge_gap=30,
-    max_merge_distance=100
+    max_merge_overlap_frames=3,
+    max_merge_distance=80,
+    min_segment_length=20
 ):
     """
     Draw smoothed 2D trajectories from tracking JSON with optional merging of fragmented tracks.
@@ -334,22 +360,20 @@ def draw_merged_paths_from_json(
         polyorder (int): Polynomial order for smoothing.
         max_merge_gap (int): Max frame gap between track ends to consider merging.
         max_merge_distance (float): Max distance in projected space to consider merging.
+
+
+    Returns:
+        merged_tracks (list): List of merged track dicts with keys 'track_id', 'team', 'frames', and 'points'.
+        bg_img (np.ndarray): The resized field background image.
     """
-    # Load data
+    # Load JSON data
     with open(json_path) as f:
         data = json.load(f)
-
-    # Load and resize field background
-    bg_img = cv2.imread(image_path)
-    if bg_img is None:
-        raise FileNotFoundError(f"Failed to load image: {image_path}")
-    bg_img = cv2.cvtColor(bg_img, cv2.COLOR_BGR2RGB)
-    bg_img = cv2.resize(bg_img, field_size)
 
     # Collect and smooth trajectories
     track_dict = {}
     for obj in data:
-        split_objects = split_track_by_team_conf(obj, min_segment_length=20)
+        split_objects = split_track_by_team_conf(obj, min_segment_length=min_segment_length)
 
         for split_obj in split_objects:
             tid = split_obj['track_id']
@@ -358,8 +382,6 @@ def draw_merged_paths_from_json(
 
             if len(projected_points) < min_track_length:
                 continue
-
-            # projected_points = smooth_and_project_bboxes_with_ekf(bbox_sequence, H)
 
             pts = np.array([pt for pt in projected_points if pt is not None])
             if len(pts) < min_track_length:
@@ -378,19 +400,48 @@ def draw_merged_paths_from_json(
                 method='savgol',
                 window_size=smoothing_window,
                 polyorder=polyorder,
-                max_step=20
+                max_step=max_step
             )
 
-            # print(f"Track {tid} smoothed: {len(xs)} points after smoothing")
-            # print(split_obj.get("team"))
             track_dict[tid] = {
                 "team": split_obj.get("team", "ball"),
                 "frames": frs,
                 "points": np.stack([xs, ys], axis=1)
             }
 
-    merged_tracks = merge_tracks_with_recursion(track_dict, max_merge_gap, max_merge_distance)
+    # Merge tracks
+    merged_tracks = merge_tracks_with_recursion(track_dict=track_dict, max_merge_gap=max_merge_gap, max_merge_overlap_frames=max_merge_overlap_frames, max_merge_distance=max_merge_distance)
 
+    return merged_tracks
+
+
+def draw_merged_paths_from_json(
+    json_path,
+    image_path,
+    field_size=(1060, 660),
+    min_track_length=5,
+    smoothing_window=90,
+    polyorder=2,
+    max_merge_gap=30,
+    max_merge_distance=100
+):
+    
+    # Load and resize field background
+    bg_img = cv2.imread(image_path)
+    if bg_img is None:
+        raise FileNotFoundError(f"Failed to load image: {image_path}")
+    bg_img = cv2.cvtColor(bg_img, cv2.COLOR_BGR2RGB)
+    bg_img = cv2.resize(bg_img, field_size)
+
+    merged_tracks= load_and_merge_tracks(
+        json_path,
+        field_size=field_size,
+        min_track_length=min_track_length,
+        smoothing_window=smoothing_window,
+        polyorder=polyorder,
+        max_merge_gap=max_merge_gap,
+        max_merge_distance=max_merge_distance
+    )
 
     # Draw on background
     fig, ax = plt.subplots(figsize=(12, 7))
