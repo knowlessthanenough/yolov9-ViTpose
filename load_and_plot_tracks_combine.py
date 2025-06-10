@@ -260,7 +260,7 @@ def interpolate_full_track(frames: List[int], points: np.ndarray) -> Tuple[np.nd
 def merge_tracks_with_recursion(track_dict: Dict[str, Dict[str, Any]],
                                 max_merge_gap: int = 5,
                                 max_merge_overlap_frames: int = 3,
-                                max_merge_distance: float = 30) -> List[Dict[str, Any]]:
+                                max_merge_distance: float = 10) -> List[Dict[str, Any]]:
     """
     Recursively merges track segments based on temporal and spatial proximity with optional interpolation.
 
@@ -313,16 +313,6 @@ def merge_tracks_with_recursion(track_dict: Dict[str, Dict[str, Any]],
                 break
 
             tid_b, data_b = best_candidate
-            # gap_start = merged["frames"][-1]
-            # gap_end = data_b["frames"][0]
-            # if gap_end - gap_start > 1:
-            #     interp_frames, interp_points = interpolate_missing_frames(
-            #         [gap_start, gap_end],
-            #         [merged["points"][-1], data_b["points"][0]]
-            #     )
-            #     merged["frames"].extend(interp_frames[1:-1])
-            #     merged["points"].extend(interp_points[1:-1])
-
             merged["frames"].extend(data_b["frames"])
             merged["points"].extend(data_b["points"])
             used.add(tid_b)
@@ -338,15 +328,15 @@ def merge_tracks_with_recursion(track_dict: Dict[str, Dict[str, Any]],
 
 def load_and_merge_tracks(
     json_path,
-    field_size=(1060, 660),
-    min_track_length=10,
-    smoothing_window=90,
-    polyorder=2,
-    max_step=20,
-    max_merge_gap=30,
-    max_merge_overlap_frames=3,
-    max_merge_distance=80,
-    min_segment_length=20
+    field_size,
+    min_track_length,
+    smoothing_window,
+    polyorder,
+    max_step,
+    max_merge_gap,
+    max_merge_overlap_frames,
+    max_merge_distance,
+    min_segment_length
 ):
     """
     Draw smoothed 2D trajectories from tracking JSON with optional merging of fragmented tracks.
@@ -418,12 +408,15 @@ def load_and_merge_tracks(
 def draw_merged_paths_from_json(
     json_path,
     image_path,
-    field_size=(1060, 660),
-    min_track_length=5,
-    smoothing_window=90,
-    polyorder=2,
-    max_merge_gap=30,
-    max_merge_distance=100
+    field_size,
+    min_track_length,
+    smoothing_window,
+    polyorder,
+    max_step,
+    max_merge_gap,
+    max_merge_overlap_frames,
+    max_merge_distance,
+    min_segment_length
 ):
     
     # Load and resize field background
@@ -440,7 +433,10 @@ def draw_merged_paths_from_json(
         smoothing_window=smoothing_window,
         polyorder=polyorder,
         max_merge_gap=max_merge_gap,
-        max_merge_distance=max_merge_distance
+        max_merge_distance=max_merge_distance,
+        min_segment_length=min_segment_length,
+        max_step=max_step,
+        max_merge_overlap_frames=max_merge_overlap_frames
     )
 
     # Draw on background
@@ -475,5 +471,20 @@ def draw_merged_paths_from_json(
     
 
 if  __name__ == "__main__":
+    start = time.time()
     # Example usage
-    draw_merged_paths_from_json("./runs/detect/test_4k_3-crop-from-video/team_tracking.json", "./data/images/mongkok_football_field.png")
+    draw_merged_paths_from_json(
+        "./runs/detect/test_4k_3-crop-from-video/team_tracking.json", 
+        "./data/images/mongkok_football_field.png",
+        field_size=(1060, 660),
+        min_track_length=10,
+        smoothing_window=90,
+        polyorder=7,
+        max_step=20,
+        max_merge_gap=20,
+        max_merge_overlap_frames=10,
+        max_merge_distance=50,
+        min_segment_length=20
+        )
+    end = time.time()
+    print(f"Execution time: {end - start:.2f} seconds")
