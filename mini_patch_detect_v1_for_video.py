@@ -34,6 +34,14 @@ from numba import njit
 from homography_matrix import compute_homography, apply_homography_to_point
 from idenfity_goalkeeper import extract_color_histogram_with_specific_background_color, compare_histograms, match_histograms_to_teams, load_team_histograms_from_folder
 
+def is_bbox_anomalous(curr_bbox, prev_bbox, height_thresh_ratio=0.5):
+    curr_h = curr_bbox[3] - curr_bbox[1]
+    prev_h = prev_bbox[3] - prev_bbox[1]
+    if prev_h <= 0:
+        return False
+    return curr_h < prev_h * height_thresh_ratio
+
+
 def match_features_to_teams_in_memory(crop_features, team_data):
     team_features = team_data['features']
     team_names = team_data['filenames']
@@ -324,7 +332,7 @@ def draw_detections(image, detections, class_names, color=(0, 255, 0)):
             x1, y1, x2, y2, conf, cls = det
             track_id = None
         else:
-            x1, y1, x2, y2, conf, cls, track_id = det
+            x1, y1, x2, y2, conf, cls, track_id ,projected_position = det
 
         x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
         cls = int(cls)
@@ -429,6 +437,7 @@ def run(
         half=False,  # use FP16 half-precision inference
         dnn=False,  # use OpenCV DNN for ONNX inference
         vid_stride=1,  # video frame-rate stride
+        ema_alpha = 0.5,  # EMA smoothing factor for bottom center
 ):
     
     # check homography points
@@ -591,8 +600,39 @@ def run(
                 tlbr = t.tlbr  # (x1, y1, x2, y2)
                 track_id = t.track_id
                 conf = t.score
+                x1, y1, x2, y2 = tlbr
+                cx = (x1 + x2) / 2
+                cy = y2
+
+                # Check for bbox height anomaly
+                use_previous = False
+                if hasattr(t, "prev_tlbr"):
+                    prev_h = t.prev_tlbr[3] - t.prev_tlbr[1]
+                    curr_h = tlbr[3] - tlbr[1]
+                    if prev_h > 0 and curr_h < prev_h * 0.9:
+                        use_previous = True # if current height is less than 50% of previous, use previous bbox
+
+                if use_previous and hasattr(t, "prev_bottom_center"):
+                    cx, cy = t.prev_bottom_center
+
+                # EMA smoothing
+                if not hasattr(t, "smooth_bottom_center"):
+                    t.smooth_bottom_center = (cx, cy)
+                else:
+                    px, py = t.smooth_bottom_center
+                    cx = ema_alpha * cx + (1 - ema_alpha) * px
+                    cy = ema_alpha * cy + (1 - ema_alpha) * py
+                    t.smooth_bottom_center = (cx, cy)
+
+
+                # Store prev info for next frame
+                t.prev_bottom_center = (cx, cy)
+                t.prev_tlbr = tlbr
+
+                projected_position = apply_homography_to_point((cx, cy), H)  # (x, y) projected point
+
                 cls = 0  # hardcode as person
-                final_detections.append((tlbr[0], tlbr[1], tlbr[2], tlbr[3], conf, cls, track_id))
+                final_detections.append((tlbr[0], tlbr[1], tlbr[2], tlbr[3], conf, cls, track_id, projected_position))
 
                 # Crop the clothing region
                 x1, y1, x2, y2 = map(int, [tlbr[0], tlbr[1], tlbr[2], tlbr[3]])
@@ -609,7 +649,14 @@ def run(
                 track_id = t.track_id
                 conf = t.score
                 cls = 32  # hardcode as ball
-                final_detections.append((tlbr[0], tlbr[1], tlbr[2], tlbr[3], conf, cls, track_id))
+                x1, y1, x2, y2 = tlbr
+                cx = (x1 + x2) / 2
+                cy = y2
+
+                projected_position = apply_homography_to_point((cx, cy), H)  # (x, y) projected point
+
+
+                final_detections.append((tlbr[0], tlbr[1], tlbr[2], tlbr[3], conf, cls, track_id, projected_position))
 
         with dt[5]:
             if crop_hists:  # crop_images = list of color histograms for each person
@@ -624,13 +671,8 @@ def run(
             feature_index = 0
 
             for det in final_detections:
-                x1, y1, x2, y2, conf, cls, track_id = det
+                x1, y1, x2, y2, conf, cls, track_id, projected_position  = det
                 bbox_out = [int(x1), int(y1), int(x2), int(y2), float(conf)]
-
-                # Compute projection here
-                center_x = (x1 + x2) / 2 
-                center_y = y2
-                proj_pt = apply_homography_to_point((center_x, center_y), H)
 
                 if cls == 0:                              # person
                     if feature_index < len(team_scores):
@@ -643,7 +685,7 @@ def run(
                     team_conf = {}
 
                 # ⭐ update the streamer
-                json_streamer.update(track_id, frame_idx, bbox_out, team_conf, proj_pt)
+                json_streamer.update(track_id, frame_idx, bbox_out, team_conf, projected_position)
 
         # save json every N frames
         with dt[6]:
@@ -709,6 +751,7 @@ def parse_opt():
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
     parser.add_argument('--vid-stride', type=int, default=1, help='video frame-rate stride')
+    parser.add_argument('--ema-alpha', type=float, default=0.5, help='EMA smoothing factor for bottom center')
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     opt.homography_src_points = np.array(opt.homography_src_points, dtype=np.float32).reshape(4, 2)
@@ -729,4 +772,4 @@ if __name__ == "__main__":
     main(opt)
 
 # Example usage:
-# python3 mini_patch_detect_v1_for_video.py --source './data/video/test_sample/4k_football_test.mov' --img 640 --device 0 --weights './weight/yolov9-s.pt' --name test_4k --classes 0 32 --clothes-folder-path ./data/histograms/0525_test/ --homography-src-points 172 1104 2101 895 3800 1021 3458 2057 --homography-dst-points 530 0 530 660 1060 660 1060 0
+# python3 mini_patch_detect_v1_for_video.py --source './data/video/test_sample/4k_football_test.mov' --img 640 --device 0 --weights './weight/yolov9-s.pt' --name test_4k --classes 0 32 --clothes-folder-path ./data/histograms/0525_test/ --homography-src-points 172 1104 2101 895 3800 1021 3458 2057 --homography-dst-points 530 0 530 660 1060 660 1060 0 --nosave

@@ -19,7 +19,8 @@ def create_current_dot_video(
     max_merge_gap,
     max_merge_overlap_frames,
     max_merge_distance,
-    min_segment_length,
+    window_size,
+    threshold,
     fps=30
 ):
 
@@ -39,7 +40,8 @@ def create_current_dot_video(
         max_merge_gap=max_merge_gap,
         max_merge_distance=max_merge_distance,
         max_merge_overlap_frames=max_merge_overlap_frames,
-        min_segment_length=min_segment_length,
+        window_size=window_size,
+        threshold=threshold,
         max_step=max_step,
     )
 
@@ -84,15 +86,16 @@ if __name__ == "__main__":
         json_path="./runs/detect/test_4k_3-crop-from-video/team_tracking.json",
         image_path="./data/images/mongkok_football_field.png",
         output_video_path="./trajectory_current_only.mp4",
-        smoothing_window=90,
-        polyorder=7,
-        max_merge_gap=10,
-        max_merge_distance=50,
         field_size=(1060, 660),
         min_track_length=10,
+        smoothing_window=90,
+        polyorder=7,
         max_step=20,
-        max_merge_overlap_frames=5,
-        min_segment_length=20,
+        max_merge_gap=20,
+        max_merge_overlap_frames=15,
+        max_merge_distance=100,
+        window_size=20,
+        threshold=0.9,
         fps=30
     )
     end = time.time()

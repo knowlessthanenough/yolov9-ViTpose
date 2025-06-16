@@ -8,8 +8,6 @@ import cv2
 import os
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 import time
-from homography_matrix import compute_homography
-from filterpy.kalman import KalmanFilter
 from typing import List, Dict, Any, Tuple
 
 
@@ -160,18 +158,17 @@ def create_segment(track_id_base, segment_index, frame_ids, projected, bboxes, t
     }
 
 
-def split_track_by_team_conf(obj, min_segment_length=5):
+def split_track_by_consecutive_count(obj: Dict[str, Any], min_segment_length: int = 5) -> List[Dict[str, Any]]:
     """
-    Splits a single track into segments based on team_conf changes,
-    merging short segments into the previous one.
+    Split a single track only if a new team persists long enough.
+    Always retain all information by merging short switches back to previous segment.
 
     Args:
-        obj (dict): Track data.
-        threshold_ratio (float): Not used in this version but kept for API compatibility.
-        min_segment_length (int): Minimum frames to consider a segment valid.
+        obj (dict): Original track data.
+        min_persist_length (int): Minimum length the new team must persist to cause a split.
 
     Returns:
-        List[dict]: List of split (or merged) track segments.
+        List[dict]: List of split track segments, all data retained.
     """
     team_conf_list = obj["team_conf"]
     frame_ids = obj["frame_id"]
@@ -179,58 +176,148 @@ def split_track_by_team_conf(obj, min_segment_length=5):
     bboxes = obj.get("bbox", [])
 
     segments = []
-    current_team = None
     buffer = []
+    
+    # 🧠 Use majority vote over the entire track
+    current_team = assign_team_by_majority_vote(team_conf_list)
 
-    for i, conf in enumerate(team_conf_list):
+    i = 0
+
+    while i < len(team_conf_list):
+        conf = team_conf_list[i]
         dominant = max(conf, key=conf.get) if conf else "ball"
 
-        if dominant != current_team:
-            if buffer:
-                if len(buffer) < min_segment_length and segments:
-                    # Merge short segment into previous
-                    prev = segments[-1]
-                    prev["frame_id"].extend([frame_ids[j] for j in buffer])
-                    prev["projected"].extend([projected[j] for j in buffer])
-                    if bboxes:
-                        prev["bbox"].extend([bboxes[j] for j in buffer])
-                    prev["team_conf"].extend([team_conf_list[j] for j in buffer])
-                    prev["team"] = assign_team_by_majority_vote(prev["team_conf"])
-                else:
-                    segment = create_segment(
-                        obj["track_id"],
-                        len(segments),
-                        [frame_ids[j] for j in buffer],
-                        [projected[j] for j in buffer],
-                        [bboxes[j] for j in buffer] if bboxes else [],
-                        [team_conf_list[j] for j in buffer]
-                    )
-                    segments.append(segment)
-            buffer = [i]
-            current_team = dominant
-        else:
+        if dominant == current_team or current_team is None:
             buffer.append(i)
-
-    # Add last buffer
-    if buffer:
-        if len(buffer) < min_segment_length and segments:
-            prev = segments[-1]
-            prev["frame_id"].extend([frame_ids[j] for j in buffer])
-            prev["projected"].extend([projected[j] for j in buffer])
-            if bboxes:
-                prev["bbox"].extend([bboxes[j] for j in buffer])
-            prev["team_conf"].extend([team_conf_list[j] for j in buffer])
-            prev["team"] = assign_team_by_majority_vote(prev["team_conf"])
+            current_team = dominant
+            i += 1
         else:
-            segment = create_segment(
-                obj["track_id"],
-                len(segments),
-                [frame_ids[j] for j in buffer],
-                [projected[j] for j in buffer],
-                [bboxes[j] for j in buffer] if bboxes else [],
-                [team_conf_list[j] for j in buffer]
-            )
-            segments.append(segment)
+            # Check how long the new team persists
+            j = i
+            new_team = dominant
+            count = 0
+            while j < len(team_conf_list):
+                new_conf = team_conf_list[j]
+                new_dominant = max(new_conf, key=new_conf.get) if new_conf else "ball"
+                if new_dominant == new_team:
+                    count += 1
+                    if count >= min_segment_length:
+                        # Commit the previous segment
+                        segment = {
+                            "track_id": f"{obj['track_id']}{chr(97 + len(segments))}",
+                            "frame_id": [frame_ids[k] for k in buffer],
+                            "projected": [projected[k] for k in buffer],
+                            "bbox": [bboxes[k] for k in buffer] if bboxes else [],
+                            "team_conf": [team_conf_list[k] for k in buffer],
+                            "team": current_team
+                        }
+                        segments.append(segment)
+                        buffer = []
+                        current_team = new_team
+                        break
+                    j += 1
+                else:
+                    break
+            # Either we split or we don't
+            if count >= min_segment_length:
+                continue
+            else:
+                # Treat new frames as part of old segment
+                buffer.append(i)
+                i += 1
+
+    # Add remaining buffer
+    if buffer:
+        segment = {
+            "track_id": f"{obj['track_id']}{chr(97 + len(segments))}",
+            "frame_id": [frame_ids[k] for k in buffer],
+            "projected": [projected[k] for k in buffer],
+            "bbox": [bboxes[k] for k in buffer] if bboxes else [],
+            "team_conf": [team_conf_list[k] for k in buffer],
+            "team": current_team
+        }
+        segments.append(segment)
+
+    return segments
+
+
+def split_track_by_sliding_window(
+    obj: Dict[str, Any],
+    window_size: int = 20,
+    threshold: float = 0.8
+) -> List[Dict[str, Any]]:
+    """
+    Splits a track when a new team dominates a sliding window.
+
+    Args:
+        obj: Original track.
+        window_size: Size of the sliding window.
+        threshold: Ratio of frames in the window needed for a team to trigger a split.
+
+    Returns:
+        List of split track segments.
+    """
+    team_conf_list = obj["team_conf"]
+    frame_ids = obj["frame_id"]
+    projected = obj["projected"]
+    bboxes = obj.get("bbox", [])
+
+    # Get dominant team label for each frame
+    dominant_team_list = [
+        max(conf, key=conf.get) if conf else "ball"
+        for conf in team_conf_list
+    ]
+
+    segments = []
+    buffer = []
+    i = 0
+    current_team = assign_team_by_majority_vote(team_conf_list)
+
+    while i < len(dominant_team_list):
+        if dominant_team_list[i] == current_team:
+            buffer.append(i)
+            i += 1
+            continue
+
+        # Only check if enough room for a full window
+        if i + window_size <= len(dominant_team_list):
+            window = dominant_team_list[i:i + window_size]
+            counter = defaultdict(int)
+            for t in window:
+                counter[t] += 1
+            dominant_in_window = max(counter, key=counter.get)
+            ratio = counter[dominant_in_window] / window_size
+
+            if dominant_in_window != current_team and ratio >= threshold:
+                # Commit segment
+                segment = {
+                    "track_id": f"{obj['track_id']}{chr(97 + len(segments))}",
+                    "frame_id": [frame_ids[j] for j in buffer],
+                    "projected": [projected[j] for j in buffer],
+                    "bbox": [bboxes[j] for j in buffer] if bboxes else [],
+                    "team_conf": [team_conf_list[j] for j in buffer],
+                    "team": current_team
+                }
+                segments.append(segment)
+                buffer = []
+                current_team = dominant_in_window
+                # move window forward
+                continue
+
+        buffer.append(i)
+        i += 1
+
+    # Final segment
+    if buffer:
+        segment = {
+            "track_id": f"{obj['track_id']}{chr(97 + len(segments))}",
+            "frame_id": [frame_ids[j] for j in buffer],
+            "projected": [projected[j] for j in buffer],
+            "bbox": [bboxes[j] for j in buffer] if bboxes else [],
+            "team_conf": [team_conf_list[j] for j in buffer],
+            "team": current_team
+        }
+        segments.append(segment)
 
     return segments
 
@@ -255,6 +342,81 @@ def interpolate_full_track(frames: List[int], points: np.ndarray) -> Tuple[np.nd
     full_points = np.stack([xs_interp, ys_interp], axis=1)
 
     return all_frames, full_points
+
+
+def optimized_merge_tracks(track_dict: Dict[str, Dict[str, Any]],
+                           max_merge_gap: int = 5,
+                           max_merge_overlap_frames: int = 3,
+                           max_merge_distance: float = 10) -> List[Dict[str, Any]]:
+    """
+    Optimized version of recursive track merging using indexed frame buckets and early rejection.
+
+    Args:
+        track_dict (dict): Dictionary of track segments.
+        max_merge_gap (int): Maximum frame gap for merging.
+        max_merge_overlap_frames (int): Maximum overlap frames allowed.
+        max_merge_distance (float): Maximum spatial distance for merging.
+
+    Returns:
+        List of merged track segments.
+    """
+    # Sort track items by start frame
+    track_items = sorted(track_dict.items(), key=lambda x: x[1]["frames"][0])
+    frame_start_index = defaultdict(list)
+    for tid, data in track_items:
+        frame_start_index[data["frames"][0]].append((tid, data))
+
+    merged_tracks = []
+    used = set()
+
+    for tid_a, data_a in track_items:
+        if tid_a in used:
+            continue
+        merged = {
+            "team": data_a["team"],
+            "frames": np.array(data_a["frames"]),
+            "points": np.array(data_a["points"]),
+            "track_id": tid_a
+        }
+        used.add(tid_a)
+
+        while True:
+            best_candidate = None
+            best_dist = float('inf')
+            last_frame = merged["frames"][-1]
+            last_point = merged["points"][-1]
+
+            candidate_frames = range(last_frame - max_merge_overlap_frames, last_frame + max_merge_gap + 1)
+            candidates = []
+            for f in candidate_frames:
+                candidates.extend(frame_start_index.get(f, []))
+
+            for tid_b, data_b in candidates:
+                if tid_b in used or data_b["team"] != merged["team"]:
+                    continue
+                gap = data_b["frames"][0] - last_frame
+                if not ((0 <= gap <= max_merge_gap) or (0 < -gap <= max_merge_overlap_frames)):
+                    continue
+                first_point = np.array(data_b["points"][0])
+                if abs(first_point[0] - last_point[0]) > max_merge_distance or \
+                   abs(first_point[1] - last_point[1]) > max_merge_distance:
+                    continue
+                dist = np.linalg.norm(last_point - first_point)
+                if dist <= max_merge_distance and dist < best_dist:
+                    best_candidate = (tid_b, data_b)
+                    best_dist = dist
+
+            if best_candidate is None:
+                break
+
+            tid_b, data_b = best_candidate
+            merged["frames"] = np.concatenate((merged["frames"], np.array(data_b["frames"])))
+            merged["points"] = np.concatenate((merged["points"], np.array(data_b["points"])))
+            used.add(tid_b)
+
+        merged_tracks.append(merged)
+
+    return merged_tracks
 
 
 def merge_tracks_with_recursion(track_dict: Dict[str, Dict[str, Any]],
@@ -336,7 +498,8 @@ def load_and_merge_tracks(
     max_merge_gap,
     max_merge_overlap_frames,
     max_merge_distance,
-    min_segment_length
+    window_size,
+    threshold,
 ):
     """
     Draw smoothed 2D trajectories from tracking JSON with optional merging of fragmented tracks.
@@ -363,7 +526,7 @@ def load_and_merge_tracks(
     # Collect and smooth trajectories
     track_dict = {}
     for obj in data:
-        split_objects = split_track_by_team_conf(obj, min_segment_length=min_segment_length)
+        split_objects = split_track_by_sliding_window(obj, window_size, threshold)
 
         for split_obj in split_objects:
             tid = split_obj['track_id']
@@ -400,7 +563,10 @@ def load_and_merge_tracks(
             }
 
     # Merge tracks
-    merged_tracks = merge_tracks_with_recursion(track_dict=track_dict, max_merge_gap=max_merge_gap, max_merge_overlap_frames=max_merge_overlap_frames, max_merge_distance=max_merge_distance)
+    merged_tracks = optimized_merge_tracks(track_dict=track_dict, max_merge_gap=max_merge_gap, max_merge_overlap_frames=max_merge_overlap_frames, max_merge_distance=max_merge_distance)
+
+    # Apply custom rules to fix team/referee assignments
+    
 
     return merged_tracks
 
@@ -416,7 +582,8 @@ def draw_merged_paths_from_json(
     max_merge_gap,
     max_merge_overlap_frames,
     max_merge_distance,
-    min_segment_length
+    window_size,
+    threshold,
 ):
     
     # Load and resize field background
@@ -434,7 +601,8 @@ def draw_merged_paths_from_json(
         polyorder=polyorder,
         max_merge_gap=max_merge_gap,
         max_merge_distance=max_merge_distance,
-        min_segment_length=min_segment_length,
+        window_size=window_size,
+        threshold=threshold,
         max_step=max_step,
         max_merge_overlap_frames=max_merge_overlap_frames
     )
@@ -474,7 +642,7 @@ if  __name__ == "__main__":
     start = time.time()
     # Example usage
     draw_merged_paths_from_json(
-        "./runs/detect/test_4k_3-crop-from-video/team_tracking.json", 
+        "./runs/detect/test_4k3/team_tracking.json", 
         "./data/images/mongkok_football_field.png",
         field_size=(1060, 660),
         min_track_length=10,
@@ -482,9 +650,10 @@ if  __name__ == "__main__":
         polyorder=7,
         max_step=20,
         max_merge_gap=20,
-        max_merge_overlap_frames=10,
+        max_merge_overlap_frames=15,
         max_merge_distance=50,
-        min_segment_length=20
+        window_size=20,
+        threshold=0.9
         )
     end = time.time()
     print(f"Execution time: {end - start:.2f} seconds")
