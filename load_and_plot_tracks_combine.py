@@ -289,13 +289,18 @@ def split_track_by_sliding_window(
             ratio = counter[dominant_in_window] / window_size
 
             if dominant_in_window != current_team and ratio >= threshold:
+                segment_conf_list = [team_conf_list[j] for j in buffer]
+                if segment_conf_list:
+                    team_score = sum(conf.get(current_team, 0.0) for conf in segment_conf_list) / len(segment_conf_list)
+                else:
+                    team_score = 0.0
                 # Commit segment
                 segment = {
                     "track_id": f"{obj['track_id']}{chr(97 + len(segments))}",
                     "frame_id": [frame_ids[j] for j in buffer],
                     "projected": [projected[j] for j in buffer],
                     "bbox": [bboxes[j] for j in buffer] if bboxes else [],
-                    "team_conf": [team_conf_list[j] for j in buffer],
+                    "team_conf": team_score,
                     "team": current_team
                 }
                 segments.append(segment)
@@ -309,12 +314,14 @@ def split_track_by_sliding_window(
 
     # Final segment
     if buffer:
+        segment_conf_list = [team_conf_list[j] for j in buffer]
+        team_score = sum(conf.get(current_team, 0.0) for conf in segment_conf_list) / len(segment_conf_list)
         segment = {
             "track_id": f"{obj['track_id']}{chr(97 + len(segments))}",
             "frame_id": [frame_ids[j] for j in buffer],
             "projected": [projected[j] for j in buffer],
             "bbox": [bboxes[j] for j in buffer] if bboxes else [],
-            "team_conf": [team_conf_list[j] for j in buffer],
+            "team_conf": team_score,
             "team": current_team
         }
         segments.append(segment)
@@ -344,7 +351,7 @@ def interpolate_full_track(frames: List[int], points: np.ndarray) -> Tuple[np.nd
     return all_frames, full_points
 
 
-def optimized_merge_tracks(track_dict: Dict[str, Dict[str, Any]],
+def optimized_merge_tracks(track_dict: Dict[str,  Dict[str, Any]],
                            max_merge_gap: int = 5,
                            max_merge_overlap_frames: int = 3,
                            max_merge_distance: float = 10) -> List[Dict[str, Any]]:
@@ -372,11 +379,14 @@ def optimized_merge_tracks(track_dict: Dict[str, Dict[str, Any]],
     for tid_a, data_a in track_items:
         if tid_a in used:
             continue
+
         merged = {
             "team": data_a["team"],
             "frames": np.array(data_a["frames"]),
             "points": np.array(data_a["points"]),
-            "track_id": tid_a
+            "track_id": tid_a,
+            "team_conf_total": data_a.get("team_conf", 0.0) * len(data_a["frames"]),
+            "team_conf_len": len(data_a["frames"]),
         }
         used.add(tid_a)
 
@@ -412,7 +422,23 @@ def optimized_merge_tracks(track_dict: Dict[str, Dict[str, Any]],
             tid_b, data_b = best_candidate
             merged["frames"] = np.concatenate((merged["frames"], np.array(data_b["frames"])))
             merged["points"] = np.concatenate((merged["points"], np.array(data_b["points"])))
+            merged["team_conf_total"] += data_b.get("team_conf", 0.0) * len(data_b["frames"])
+            merged["team_conf_len"] += len(data_b["frames"])
             used.add(tid_b)
+
+        frames, points = interpolate_full_track(merged["frames"], merged["points"])
+        merged["frames"] = frames
+        merged["points"] = points
+        # Keep only start and end frame
+        merged["frame_range"] = [int(frames[0]), int(frames[-1])]
+        merged["team_conf"] = (
+            merged["team_conf_total"] / merged["team_conf_len"]
+            if merged["team_conf_len"] > 0 else 0.0
+        )
+        del merged["team_conf_total"]
+        del merged["team_conf_len"]
+        # Remove raw frame list (optional if not needed)
+        del merged["frames"]
 
         merged_tracks.append(merged)
 
@@ -523,50 +549,88 @@ def load_and_merge_tracks(
     with open(json_path) as f:
         data = json.load(f)
 
+    output_json = []
+    output_json_path = os.path.splitext(json_path)[0] + "_merged.json"
+
     # Collect and smooth trajectories
     track_dict = {}
+
     for obj in data:
+        projected_points = obj.get("projected", [])
+        if len(projected_points) < min_track_length:
+            continue
+
+        pts = np.array([pt for pt in projected_points if pt is not None])
+        if len(pts) < min_track_length:
+            continue
+
+        xs, ys = pts[:, 0], pts[:, 1]
+        in_bounds = (xs >= 0) & (xs <= field_size[0]) & (ys >= 0) & (ys <= field_size[1])
+        if in_bounds.sum() < min_track_length:
+            continue
+
+        obj["frame_id"] = np.array(obj["frame_id"])[in_bounds].tolist()
+        obj["projected"] = pts[in_bounds].tolist()
+        if "bbox" in obj:
+            obj["bbox"] = np.array(obj["bbox"])[in_bounds].tolist()
+        if "team_conf" in obj:
+            obj["team_conf"] = np.array(obj["team_conf"])[in_bounds].tolist()
+
+        # Now we split the clean long track
         split_objects = split_track_by_sliding_window(obj, window_size, threshold)
 
         for split_obj in split_objects:
-            tid = split_obj['track_id']
-            frames = split_obj['frame_id']
-            projected_points = split_obj.get('projected', [])
-
-            if len(projected_points) < min_track_length:
-                continue
+            tid = split_obj["track_id"]
+            frames = split_obj["frame_id"]
+            projected_points = split_obj["projected"]
 
             pts = np.array([pt for pt in projected_points if pt is not None])
-            if len(pts) < min_track_length:
-                continue
-
+            if len(pts) == 0:
+                continue  # skip this segment
             xs, ys = pts[:, 0], pts[:, 1]
-            in_bounds = (xs >= 0) & (xs <= field_size[0]) & (ys >= 0) & (ys <= field_size[1])
-            if in_bounds.sum() < min_track_length:
-                continue
 
-            xs, ys = xs[in_bounds], ys[in_bounds]
-            frs = np.array(frames)[in_bounds]
-
-            xs, ys = apply_position_smoothing(
-                xs, ys,
-                method='savgol',
-                window_size=smoothing_window,
-                polyorder=polyorder,
-                max_step=max_step
-            )
+            frs = np.array(frames)
 
             track_dict[tid] = {
                 "team": split_obj.get("team", "ball"),
+                "team_conf": split_obj.get("team_conf", []),
                 "frames": frs,
-                "points": np.stack([xs, ys], axis=1)
+                "points": np.stack([xs, ys], axis=1),
             }
 
     # Merge tracks
     merged_tracks = optimized_merge_tracks(track_dict=track_dict, max_merge_gap=max_merge_gap, max_merge_overlap_frames=max_merge_overlap_frames, max_merge_distance=max_merge_distance)
 
-    # Apply custom rules to fix team/referee assignments
-    
+    for track in merged_tracks:
+        points = np.array(track["points"])
+        if len(points) < smoothing_window:
+            continue  # skip too short tracks
+
+        xs, ys = points[:, 0], points[:, 1]
+        xs, ys = apply_position_smoothing(
+            xs, ys,
+            method="savgol",
+            window_size=smoothing_window,
+            polyorder=polyorder,
+            max_step=max_step,
+        )
+        track["points"] = np.stack([xs, ys], axis=1)
+
+        # for json output, convert points to lists
+        points = track["points"].tolist() if isinstance(track["points"], np.ndarray) else track["points"]
+
+        output_json.append({
+            "track_id": track["track_id"] if "track_id" in track else None,
+            "team": track["team"],
+            "team_conf": track.get("team_conf", 0.0),  # <--- Add this line
+            "frame_range": track.get("frame_range", []),
+            "projected": points
+        })
+
+    # Write to json file
+    with open(output_json_path, "w") as f:
+        json.dump(output_json, f, indent=4)
+    print(f"Merged tracks saved to {output_json_path}")
 
     return merged_tracks
 
@@ -639,10 +703,9 @@ def draw_merged_paths_from_json(
     
 
 if  __name__ == "__main__":
-    start = time.time()
     # Example usage
     draw_merged_paths_from_json(
-        "./runs/detect/test_4k3/team_tracking.json", 
+        "./runs/detect/test_4k2/team_tracking.json", 
         "./data/images/mongkok_football_field.png",
         field_size=(1060, 660),
         min_track_length=10,
@@ -655,5 +718,4 @@ if  __name__ == "__main__":
         window_size=20,
         threshold=0.9
         )
-    end = time.time()
-    print(f"Execution time: {end - start:.2f} seconds")
+

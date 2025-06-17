@@ -58,22 +58,27 @@ def create_current_dot_video(
     }
 
     # Define frame range
-    min_frame = min(min(t["frames"]) for t in merged_tracks)
-    max_frame = max(max(t["frames"]) for t in merged_tracks)
+    min_frame = min(t["frame_range"][0] for t in merged_tracks)
+    max_frame = max(t["frame_range"][1] for t in merged_tracks)
 
     for f in range(min_frame, max_frame + 1):
         frame_img = bg_img.copy()
         for track in merged_tracks:
-            frames = np.array(track["frames"])
-            points = np.array(track["points"])
-            idx = np.where(frames == f)[0]
-            if len(idx) > 0:
-                i = idx[0]
-                x, y = int(points[i][0]), field_size[1] - int(points[i][1])
-                color = team_colors.get(track["team"], (128, 128, 128))
-                cv2.circle(frame_img, (x, y), 5, color, -1)
-                cv2.putText(frame_img, str(track["track_id"]), (x + 6, y - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+            start_frame, end_frame = track["frame_range"]
+            if not (start_frame <= f <= end_frame):
+                continue
+            index = f - start_frame
+            if index < 0 or index >= len(track["points"]):
+                continue
+
+            points = track["points"][index]
+            if points is None:
+                continue
+            x, y = int(points[0]), field_size[1] - int(points[1])
+            color = team_colors.get(track["team"], (128, 128, 128))
+            cv2.circle(frame_img, (x, y), 5, color, -1)
+            cv2.putText(frame_img, str(track["track_id"]), (x + 6, y - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
         writer.write(frame_img)
 
     writer.release()
@@ -83,7 +88,7 @@ if __name__ == "__main__":
     start = time.time()
     # Example usage
     create_current_dot_video(
-        json_path="./runs/detect/test_4k_3-crop-from-video/team_tracking.json",
+        json_path="./runs/detect/test_4k2/team_tracking.json",
         image_path="./data/images/mongkok_football_field.png",
         output_video_path="./trajectory_current_only.mp4",
         field_size=(1060, 660),
