@@ -4,7 +4,7 @@ import cv2
 from collections import defaultdict
 from scipy.signal import savgol_filter
 import time
-from load_and_plot_tracks_combine import load_and_merge_tracks
+from load_and_plot_tracks_combine import load_and_merge_tracks, remove_referee_near_boundary
 
 
 def create_current_dot_video(
@@ -43,6 +43,12 @@ def create_current_dot_video(
         window_size=window_size,
         threshold=threshold,
         max_step=max_step,
+    )
+
+    merged_tracks = remove_referee_near_boundary(
+        merged_tracks,
+        field_size=field_size,
+        margin_meter=30
     )
 
     # Set up video writer

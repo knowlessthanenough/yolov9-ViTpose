@@ -549,8 +549,8 @@ def load_and_merge_tracks(
     with open(json_path) as f:
         data = json.load(f)
 
-    output_json = []
-    output_json_path = os.path.splitext(json_path)[0] + "_merged.json"
+    # output_json = []
+    # output_json_path = os.path.splitext(json_path)[0] + "_merged_in_load_function.json"
 
     # Collect and smooth trajectories
     track_dict = {}
@@ -603,8 +603,9 @@ def load_and_merge_tracks(
 
     for track in merged_tracks:
         points = np.array(track["points"])
-        if len(points) < smoothing_window:
-            continue  # skip too short tracks
+        # Keep ball track even if short
+        if len(points) < smoothing_window and track["team"] != "ball":
+            continue
 
         xs, ys = points[:, 0], points[:, 1]
         xs, ys = apply_position_smoothing(
@@ -616,23 +617,59 @@ def load_and_merge_tracks(
         )
         track["points"] = np.stack([xs, ys], axis=1)
 
-        # for json output, convert points to lists
-        points = track["points"].tolist() if isinstance(track["points"], np.ndarray) else track["points"]
+    #     # for json output, convert points to lists
+    #     points = track["points"].tolist() if isinstance(track["points"], np.ndarray) else track["points"]
 
-        output_json.append({
-            "track_id": track["track_id"] if "track_id" in track else None,
-            "team": track["team"],
-            "team_conf": track.get("team_conf", 0.0),  # <--- Add this line
-            "frame_range": track.get("frame_range", []),
-            "projected": points
-        })
+    #     output_json.append({
+    #         "track_id": track["track_id"] if "track_id" in track else None,
+    #         "team": track["team"],
+    #         "team_conf": track.get("team_conf", 0.0),  # <--- Add this line
+    #         "frame_range": track.get("frame_range", []),
+    #         "projected": points
+    #     })
 
-    # Write to json file
-    with open(output_json_path, "w") as f:
-        json.dump(output_json, f, indent=4)
-    print(f"Merged tracks saved to {output_json_path}")
+    # # Write to json file
+    # with open(output_json_path, "w") as f:
+    #     json.dump(output_json, f, indent=4)
+    # print(f"Merged tracks saved to {output_json_path}")
 
     return merged_tracks
+
+
+def remove_referee_near_boundary(merged_tracks, field_size, margin_meter=3.0):
+    """
+    Remove referee tracks that stay mostly near the field boundary (in 0.1 meters).
+
+    Args:
+        merged_tracks (list): List of merged track dicts.
+        field_size (tuple): Field dimensions (length, width) in 0.1 meters.
+        margin_meter (float): Distance from boundary (in meters) considered "near".
+
+    Returns:
+        List of filtered tracks.
+    """
+    filtered_tracks = []
+
+    for track in merged_tracks:
+        if track["team"] != "referee":
+            filtered_tracks.append(track)
+            continue
+
+        points = np.array(track["points"])
+        xs, ys = points[:, 0], points[:, 1]
+
+        near_left = (xs < margin_meter).sum()
+        near_right = (xs > field_size[0] - margin_meter).sum()
+        near_top = (ys < margin_meter).sum()
+        near_bottom = (ys > field_size[1] - margin_meter).sum()
+
+        near_edge_ratio = (near_left + near_right + near_top + near_bottom) / len(points)
+
+        # Only remove if most of the referee's path is along the edge
+        if near_edge_ratio < 0.7:
+            filtered_tracks.append(track)
+
+    return filtered_tracks
 
 
 def draw_merged_paths_from_json(
@@ -657,6 +694,9 @@ def draw_merged_paths_from_json(
     bg_img = cv2.cvtColor(bg_img, cv2.COLOR_BGR2RGB)
     bg_img = cv2.resize(bg_img, field_size)
 
+    output_json = []
+    output_json_path = os.path.splitext(json_path)[0] + "_merged.json"
+
     merged_tracks= load_and_merge_tracks(
         json_path,
         field_size=field_size,
@@ -669,6 +709,13 @@ def draw_merged_paths_from_json(
         threshold=threshold,
         max_step=max_step,
         max_merge_overlap_frames=max_merge_overlap_frames
+    )
+
+    # Remove referee tracks that stay mostly near the boundary
+    merged_tracks = remove_referee_near_boundary(
+        merged_tracks,
+        field_size=field_size,
+        margin_meter=30
     )
 
     # Draw on background
@@ -693,6 +740,20 @@ def draw_merged_paths_from_json(
         ax.plot(xs, ys, color=color, alpha=0.8)
         ax.scatter(xs[-1], ys[-1], color=color)
         ax.text(xs[-1], ys[-1], str(track["track_id"]), fontsize=8, color='black')
+
+        #save to json
+        output_json.append({
+            "track_id": track["track_id"],
+            "team": team,
+            "team_conf": track.get("team_conf", 0.0),
+            "frame_range": track.get("frame_range", []),
+            "projected": points.tolist()
+        })
+
+    # Write to json file
+    with open(output_json_path, "w") as f:
+        json.dump(output_json, f, indent=4)
+    print(f"Merged tracks saved to {output_json_path}")
 
     ax.set_xlim(0, field_size[0])
     ax.set_ylim(0, field_size[1])
