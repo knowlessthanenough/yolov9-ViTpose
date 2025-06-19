@@ -411,6 +411,7 @@ def run(
         source=ROOT / 'data/images',  # file/dir/URL/glob/screen/0(webcam)
         data=ROOT / 'data/coco.yaml',  # dataset.yaml path
         clothes_folder_path=ROOT / '',  # path to clothing features
+        json_save_path=None,  # path to save tracking JSON
         imgsz=(640, 640),  # inference size (height, width)
         conf_thres=0.25,  # confidence threshold
         iou_thres=0.45,  # NMS IOU threshold
@@ -482,7 +483,10 @@ def run(
     output_path = str(Path(save_dir) / ("after_gobalNMS_overlap_remove_annotated_" + Path(source).name))
 
     # init json
-    output_json_path = str(Path(save_dir) / "team_tracking.json")
+    if json_save_path is None:
+        output_json_path = str(Path(save_dir) / "team_tracking.json")
+    else:
+        output_json_path = json_save_path
     json_streamer = TrackJsonStreamer(output_json_path,
                                     flush_interval=500,
                                     lost_thresh=100)  # tune as needed
@@ -490,10 +494,11 @@ def run(
     # if 'team_json_records' not in globals():
     #     team_json_records = defaultdict(lambda: {'frame_id': [], 'team_conf': [], 'bbox': []})
 
-    print(f"🔄 Saving video to: {output_path}")
+    if not nosave:
+        print(f"🔄 Saving video to: {output_path}")
+        out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
     print(f"🔄 Saving tracking JSON to: {output_json_path}")
-    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
-
+    
     # Initialize tracker
     ball_tracker = BYTETracker(tracker_args, frame_rate=tracker_args.fps)
     person_tracker = BYTETracker(tracker_args, frame_rate=tracker_args.fps)
@@ -543,7 +548,7 @@ def run(
             all_detections = []
             ckp1 = time.time()  # checkpoint for copy image
 
-            # Process predictions
+            # convert predictions to original image coordinates
             for i, det in enumerate(pred):  # per image
                 x_offset, y_offset = offsets[i]
                 if det is not None and len(det):
@@ -640,7 +645,7 @@ def run(
                 if crop_img.size == 0:
                     continue  # skip empty crops
                 crop_hist = extract_color_histogram_with_specific_background_color(
-                    crop_img)  # example white mask
+                    crop_img)  
                 crop_hists.append(crop_hist)
                 crop_track_ids.append(track_id) # may not be required, cause the index of crop_tensors is first N element of final_detections
 
@@ -694,9 +699,11 @@ def run(
 
         # Draw results
         with dt[7]:
-            if not nosave:
+            if not nosave or view_img:
                 # print("team_scores: ",team_scores, )
                 draw_detections(annotated_image, final_detections, names)
+            if not nosave:
+                # Save results
                 out.write(annotated_image)
 
         total_time = sum(dt[i].dt for i in range(len(dt)))
@@ -706,11 +713,11 @@ def run(
             cv2.imshow("YOLO Detection", annotated_image)
             if cv2.waitKey(1) == ord("q"):
                 break
-
-    cap.release()
-    out.release()
-    cv2.destroyAllWindows()
-    print(f"✅ Saved video to: {output_path}")
+    if not nosave:
+        cap.release()
+        out.release()
+        cv2.destroyAllWindows()
+        print(f"✅ Saved video to: {output_path}")
 
     # close streamer → writes remaining tracks & final ‘]’
     json_streamer.close()
@@ -723,6 +730,7 @@ def parse_opt():
     parser.add_argument('--source', type=str, default=ROOT / 'data/images', help='file/dir/URL/glob/screen/0(webcam)')
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='(optional) dataset.yaml path')
     parser.add_argument('--clothes-folder-path', type=str, default=ROOT / '', help='path to clothing features for assigning team IDs')
+    parser.add_argument('--json-save-path', type=str, default=None, help='path to save tracking JSON')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')

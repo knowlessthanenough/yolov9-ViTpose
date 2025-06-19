@@ -4,7 +4,8 @@ import cv2
 from collections import defaultdict
 from scipy.signal import savgol_filter
 import time
-from load_and_plot_tracks_combine import load_and_merge_tracks, remove_referee_near_boundary
+from yolov9.output_video_or_imagre_or_json_from_orginal_json import load_and_merge_tracks, remove_referee_near_boundary, save_tracks_to_json
+import os
 
 
 def create_current_dot_video(
@@ -30,6 +31,8 @@ def create_current_dot_video(
         raise FileNotFoundError(f"Could not load image: {image_path}")
     bg_img = cv2.resize(bg_img, field_size)
     height, width, _ = bg_img.shape
+
+    # output_json_path = os.path.splitext(json_path)[0] + "_merged.json"
 
     merged_tracks = load_and_merge_tracks(
         json_path=json_path,
@@ -87,8 +90,12 @@ def create_current_dot_video(
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
         writer.write(frame_img)
 
+    # # save to output JSON
+    # save_tracks_to_json(merged_tracks, output_json_path)
+
     writer.release()
     print(f"✅ Saved video to: {output_video_path}")
+
 
 if __name__ == "__main__":
     start = time.time()

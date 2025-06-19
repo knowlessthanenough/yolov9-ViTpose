@@ -691,11 +691,10 @@ def draw_merged_paths_from_json(
     bg_img = cv2.imread(image_path)
     if bg_img is None:
         raise FileNotFoundError(f"Failed to load image: {image_path}")
-    bg_img = cv2.cvtColor(bg_img, cv2.COLOR_BGR2RGB)
+    # bg_img = cv2.cvtColor(bg_img, cv2.COLOR_BGR2RGB)
     bg_img = cv2.resize(bg_img, field_size)
 
-    output_json = []
-    output_json_path = os.path.splitext(json_path)[0] + "_merged.json"
+    # output_json_path = os.path.splitext(json_path)[0] + "_merged.json"
 
     merged_tracks= load_and_merge_tracks(
         json_path,
@@ -731,43 +730,330 @@ def draw_merged_paths_from_json(
     }
 
     for track in merged_tracks:
-        team = track["team"]
         points = np.array(track["points"])
         if len(points) < min_track_length:
             continue
         xs, ys = points[:, 0], points[:, 1]
-        color = team_colors.get(team, 'gray')
+        color = team_colors.get(track["team"], 'gray')
         ax.plot(xs, ys, color=color, alpha=0.8)
         ax.scatter(xs[-1], ys[-1], color=color)
         ax.text(xs[-1], ys[-1], str(track["track_id"]), fontsize=8, color='black')
 
-        #save to json
-        output_json.append({
-            "track_id": track["track_id"],
-            "team": team,
-            "team_conf": track.get("team_conf", 0.0),
-            "frame_range": track.get("frame_range", []),
-            "projected": points.tolist()
-        })
-
-    # Write to json file
-    with open(output_json_path, "w") as f:
-        json.dump(output_json, f, indent=4)
-    print(f"Merged tracks saved to {output_json_path}")
+    # # save to output JSON
+    # save_tracks_to_json(merged_tracks, output_json_path)
 
     ax.set_xlim(0, field_size[0])
     ax.set_ylim(0, field_size[1])
     ax.set_title("Smoothed & Merged Trajectories")
     plt.tight_layout()
     plt.savefig("trajectory_plot.png", dpi=300)
-    plt.show()
-    
+    # plt.show()
+    ## Example usage
+    # draw_merged_paths_from_json(
+    #     "./runs/detect/test_4k2/team_tracking.json", 
+    #     "./data/images/mongkok_football_field.png",
+    #     field_size=(1060, 660),
+    #     min_track_length=10,
+    #     smoothing_window=90,
+    #     polyorder=7,
+    #     max_step=20,
+    #     max_merge_gap=20,
+    #     max_merge_overlap_frames=15,
+    #     max_merge_distance=50,
+    #     window_size=20,
+    #     threshold=0.9
+    #     )
+
+
+def create_current_dot_video(
+    json_path,
+    image_path,
+    output_video_path,
+    field_size,
+    min_track_length,
+    smoothing_window,
+    polyorder,
+    max_step,
+    max_merge_gap,
+    max_merge_overlap_frames,
+    max_merge_distance,
+    window_size,
+    threshold,
+    fps=30
+):
+
+    # Load and resize background
+    bg_img = cv2.imread(image_path)
+    if bg_img is None:
+        raise FileNotFoundError(f"Could not load image: {image_path}")
+    bg_img = cv2.resize(bg_img, field_size)
+    height, width, _ = bg_img.shape
+
+    # output_json_path = os.path.splitext(json_path)[0] + "_merged.json"
+
+    merged_tracks = load_and_merge_tracks(
+        json_path=json_path,
+        field_size=field_size,
+        min_track_length=min_track_length,
+        smoothing_window=smoothing_window,
+        polyorder=polyorder,
+        max_merge_gap=max_merge_gap,
+        max_merge_distance=max_merge_distance,
+        max_merge_overlap_frames=max_merge_overlap_frames,
+        window_size=window_size,
+        threshold=threshold,
+        max_step=max_step,
+    )
+
+    merged_tracks = remove_referee_near_boundary(
+        merged_tracks,
+        field_size=field_size,
+        margin_meter=30
+    )
+
+    # Set up video writer
+    writer = cv2.VideoWriter(output_video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+
+    team_colors = {
+        'eastern': (255, 0, 0),
+        'easterngoalkeeper': (0, 255, 0),
+        'kitchee': (255, 192, 203),
+        'kitcheegoalkeeper': (0, 165, 255),
+        'referee': (0, 255, 255),
+        'ball': (0, 0, 0),
+    }
+
+    # Define frame range
+    min_frame = min(t["frame_range"][0] for t in merged_tracks)
+    max_frame = max(t["frame_range"][1] for t in merged_tracks)
+
+    for f in range(min_frame, max_frame + 1):
+        frame_img = bg_img.copy()
+        for track in merged_tracks:
+            start_frame, end_frame = track["frame_range"]
+            if not (start_frame <= f <= end_frame):
+                continue
+            index = f - start_frame
+            if index < 0 or index >= len(track["points"]):
+                continue
+
+            points = track["points"][index]
+            if points is None:
+                continue
+            x, y = int(points[0]), field_size[1] - int(points[1])
+            color = team_colors.get(track["team"], (128, 128, 128))
+            cv2.circle(frame_img, (x, y), 5, color, -1)
+            cv2.putText(frame_img, str(track["track_id"]), (x + 6, y - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+        writer.write(frame_img)
+
+    # # save to output JSON
+    # save_tracks_to_json(merged_tracks, output_json_path)
+
+    writer.release()
+    print(f"✅ Saved video to: {output_video_path}")
+    ## Example usage
+    # create_current_dot_video(
+    #     json_path="./runs/detect/test_4k2/team_tracking.json",
+    #     image_path="./data/images/mongkok_football_field.png",
+    #     output_video_path="./trajectory_current_only.mp4",
+    #     field_size=(1060, 660),
+    #     min_track_length=10,
+    #     smoothing_window=90,
+    #     polyorder=7,
+    #     max_step=20,
+    #     max_merge_gap=20,
+    #     max_merge_overlap_frames=15,
+    #     max_merge_distance=100,
+    #     window_size=20,
+    #     threshold=0.9,
+    #     fps=30
+    # )
+
+
+def render_to_json(tracks, output_path):
+    output_json = []
+    for track in tracks:
+        output_json.append({
+            "track_id": track["track_id"],
+            "team": track["team"],
+            "team_conf": track.get("team_conf", 0.0),
+            "frame_range": track.get("frame_range", []),
+            "projected": track["points"].tolist()
+        })
+    with open(output_path, "w") as f:
+        json.dump(output_json, f, indent=4)
+    print(f"✅ Saved json to: {output_path}")
+
+
+def prepare_background_and_tracks(
+    json_path,
+    image_path,
+    field_size,
+    min_track_length,
+    smoothing_window,
+    polyorder,
+    max_step,
+    max_merge_gap,
+    max_merge_overlap_frames,
+    max_merge_distance,
+    window_size,
+    threshold
+):
+    # Load and resize background
+    bg_img = cv2.imread(image_path)
+    if bg_img is None:
+        raise FileNotFoundError(f"Failed to load image: {image_path}")
+    bg_img = cv2.resize(bg_img, field_size)
+
+    # Merge and filter tracks
+    merged_tracks = load_and_merge_tracks(
+        json_path=json_path,
+        field_size=field_size,
+        min_track_length=min_track_length,
+        smoothing_window=smoothing_window,
+        polyorder=polyorder,
+        max_merge_gap=max_merge_gap,
+        max_merge_distance=max_merge_distance,
+        max_merge_overlap_frames=max_merge_overlap_frames,
+        window_size=window_size,
+        threshold=threshold,
+        max_step=max_step,
+    )
+
+    merged_tracks = remove_referee_near_boundary(
+        merged_tracks,
+        field_size=field_size,
+        margin_meter=30
+    )
+
+    return bg_img, merged_tracks
+
+
+def render_to_image(bg_img, merged_tracks, field_size, min_track_length, output_path="trajectory_plot.png"):
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.imshow(bg_img[..., ::-1], extent=[0, field_size[0], 0, field_size[1]])
+    team_colors = {
+        'eastern': 'blue',
+        'easterngoalkeeper': 'green',
+        'kitchee': 'pink',
+        'kitcheegoalkeeper': 'orange',
+        'referee': 'yellow',
+        'ball': 'black',
+    }
+
+    for track in merged_tracks:
+        points = np.array(track["points"])
+        if len(points) < min_track_length:
+            continue
+        xs, ys = points[:, 0], points[:, 1]
+        color = team_colors.get(track["team"], 'gray')
+        ax.plot(xs, ys, color=color, alpha=0.8)
+        ax.scatter(xs[-1], ys[-1], color=color)
+        ax.text(xs[-1], ys[-1], str(track["track_id"]), fontsize=8, color='black')
+
+    ax.set_xlim(0, field_size[0])
+    ax.set_ylim(0, field_size[1])
+    ax.set_title("Smoothed & Merged Trajectories")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    print(f"✅ Saved image to: {output_path}")
+
+
+def render_to_video(bg_img, merged_tracks, field_size, output_path, fps=30):
+    height, width, _ = bg_img.shape
+    writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+
+    team_colors = {
+        'eastern': (255, 0, 0),
+        'easterngoalkeeper': (0, 255, 0),
+        'kitchee': (255, 192, 203),
+        'kitcheegoalkeeper': (0, 165, 255),
+        'referee': (0, 255, 255),
+        'ball': (0, 0, 0),
+    }
+
+    min_frame = min(t["frame_range"][0] for t in merged_tracks)
+    max_frame = max(t["frame_range"][1] for t in merged_tracks)
+
+    for f in range(min_frame, max_frame + 1):
+        frame_img = bg_img.copy()
+        for track in merged_tracks:
+            start, end = track["frame_range"]
+            if not (start <= f <= end):
+                continue
+            index = f - start
+            if index < 0 or index >= len(track["points"]):
+                continue
+            x, y = track["points"][index]
+            if x is None or y is None:
+                continue
+            x, y = int(x), field_size[1] - int(y)
+            color = team_colors.get(track["team"], (128, 128, 128))
+            cv2.circle(frame_img, (x, y), 5, color, -1)
+            cv2.putText(frame_img, str(track["track_id"]), (x + 6, y - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+        writer.write(frame_img)
+
+    writer.release()
+    print(f"✅ Saved video to: {output_path}")
+
+
+def process_merged_tracks(
+    json_path,
+    image_path,
+    field_size,
+    min_track_length,
+    smoothing_window,
+    polyorder,
+    max_step,
+    max_merge_gap,
+    max_merge_overlap_frames,
+    max_merge_distance,
+    window_size,
+    threshold,
+    output_type='image',
+    output_name='trajectory_plot',
+    fps=30
+):
+    # Auto-generate full path with extension
+    if output_type == 'image':
+        output_path_image = f"{output_name}.png"
+    elif output_type == 'video':
+        output_path_video = f"{output_name}.mp4"
+    elif output_type == 'all':
+        output_path_image = f"{output_name}.png"
+        output_path_video = f"{output_name}.mp4"
+    else:
+        raise ValueError("Unsupported output type. Use 'image', 'video' or 'all'.")
+    output_json_path = f"{output_name}_merged.json"
+
+    # Shared logic
+    bg_img, merged_tracks = prepare_background_and_tracks(
+        json_path, image_path, field_size,
+        min_track_length, smoothing_window, polyorder, max_step,
+        max_merge_gap, max_merge_overlap_frames, max_merge_distance,
+        window_size, threshold
+    )
+
+    # Output logic
+    if output_type == 'image':
+        render_to_image(bg_img, merged_tracks, field_size, min_track_length, output_path_image)
+    elif output_type == 'video':
+        render_to_video(bg_img, merged_tracks, field_size, output_path_video, fps)
+    elif output_type == 'all':
+        render_to_image(bg_img, merged_tracks, field_size, min_track_length, output_path_image)
+        render_to_video(bg_img, merged_tracks, field_size, output_path_video, fps)
+    render_to_json(merged_tracks, output_json_path)
+
 
 if  __name__ == "__main__":
-    # Example usage
-    draw_merged_paths_from_json(
-        "./runs/detect/test_4k2/team_tracking.json", 
-        "./data/images/mongkok_football_field.png",
+    start = time.time()
+
+    process_merged_tracks(
+        json_path="./runs/detect/test_4k2/team_tracking.json",
+        image_path="./data/images/mongkok_football_field.png",
         field_size=(1060, 660),
         min_track_length=10,
         smoothing_window=90,
@@ -777,6 +1063,12 @@ if  __name__ == "__main__":
         max_merge_overlap_frames=15,
         max_merge_distance=50,
         window_size=20,
-        threshold=0.9
-        )
+        threshold=0.9,
+        output_type='all', # 'image', 'video', or 'all'
+        output_name='trajectory_plot' 
+    )
+
+    end = time.time()
+    
+    print(f"Execution time: {end - start:.2f} seconds")
 
