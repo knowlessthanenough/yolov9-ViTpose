@@ -15,6 +15,7 @@ import torch.nn.functional as F
 import torch
 import json
 import time
+from tqdm import tqdm
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLO root directory
@@ -452,7 +453,6 @@ def run(
         source=ROOT / 'data/images',  # file/dir/URL/glob/screen/0(webcam)
         data=ROOT / 'data/coco.yaml',  # dataset.yaml path
         clothes_folder_path=ROOT / '',  # path to clothing features
-        json_save_path=None,  # path to save tracking JSON
         imgsz=(640, 640),  # inference size (height, width)
         conf_thres=0.25,  # confidence threshold
         iou_thres=0.45,  # NMS IOU threshold
@@ -520,14 +520,14 @@ def run(
     fps = cap.get(cv2.CAP_PROP_FPS) if cap.isOpened() else 30  # default to 30 FPS if not available
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    pbar = tqdm(total=total_frames, desc="Processing video", unit="frame")
     frame_idx = 0
     output_path = str(Path(save_dir) / ("after_gobalNMS_overlap_remove_annotated_" + Path(source).name))
 
     # init json
-    if json_save_path is None:
-        output_json_path = str(Path(save_dir) / "team_tracking.json")
-    else:
-        output_json_path = json_save_path
+    output_json_path = str(Path(save_dir) / "team_tracking.json")
+
     json_streamer = TrackJsonStreamer(output_json_path,
                                     flush_interval=500,
                                     lost_thresh=100)  # tune as needed
@@ -748,7 +748,19 @@ def run(
                 out.write(annotated_image)
 
         total_time = sum(dt[i].dt for i in range(len(dt)))
-        print(f"Frame {frame_idx} total use: {total_time} (preprocessed: {dt[0].dt:.2f}s, inference: {dt[1].dt:.2f}s, NMS: {dt[2].dt:.2f}s, proprocess: {dt[3].dt:.2f}s, tracking & crop patches: {dt[4].dt:.2f}s, ReID: {dt[5].dt:.2f}s, Json: {dt[6].dt:.2f}s, Draw: {dt[7].dt:.2f}s)")
+        # print(f"Frame {frame_idx} total use: {total_time} (preprocessed: {dt[0].dt:.2f}s, inference: {dt[1].dt:.2f}s, NMS: {dt[2].dt:.2f}s, proprocess: {dt[3].dt:.2f}s, tracking & crop patches: {dt[4].dt:.2f}s, ReID: {dt[5].dt:.2f}s, Json: {dt[6].dt:.2f}s, Draw: {dt[7].dt:.2f}s)")
+        pbar.set_postfix({
+            "pre": f"{dt[0].dt:.2f}s",
+            "inf": f"{dt[1].dt:.2f}s",
+            "nms": f"{dt[2].dt:.2f}s",
+            "proc": f"{dt[3].dt:.2f}s",
+            "trk": f"{dt[4].dt:.2f}s",
+            "reid": f"{dt[5].dt:.2f}s",
+            "json": f"{dt[6].dt:.2f}s",
+            "draw": f"{dt[7].dt:.2f}s",
+            "total": f"{total_time:.2f}s"
+        })
+        pbar.update(1)
 
         if view_img:
             cv2.imshow("YOLO Detection", annotated_image)
@@ -759,6 +771,7 @@ def run(
         out.release()
         cv2.destroyAllWindows()
         print(f"✅ Saved video to: {output_path}")
+        pbar.close()
 
     # close streamer → writes remaining tracks & final ‘]’
     json_streamer.close()
@@ -771,7 +784,6 @@ def parse_opt():
     parser.add_argument('--source', type=str, default=ROOT / 'data/images', help='file/dir/URL/glob/screen/0(webcam)')
     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='(optional) dataset.yaml path')
     parser.add_argument('--clothes-folder-path', type=str, default=ROOT / '', help='path to clothing features for assigning team IDs')
-    parser.add_argument('--json-save-path', type=str, default=None, help='path to save tracking JSON')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
