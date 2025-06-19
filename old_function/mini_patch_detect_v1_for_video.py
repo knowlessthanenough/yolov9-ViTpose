@@ -3,7 +3,7 @@ import os
 import platform
 import sys
 from pathlib import Path
-from overlap_cropping import crop_image_with_overlap
+from yolov9.old_function.overlap_cropping import crop_image_with_overlap
 from torchvision.ops import nms
 
 import torch

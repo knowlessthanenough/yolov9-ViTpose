@@ -48,6 +48,7 @@ def extract_color_histogram_with_specific_background_color_old(image, mask=None,
     hist = hist / np.sum(hist)  # Normalize to make it independent of image size
     return hist
 
+
 def extract_color_histogram_with_specific_background_color(
     image, 
     mask=None, 
@@ -316,6 +317,7 @@ def parse_opt():
     opt = parser.parse_args()
     return opt
 
+
 def run(image, histogram_save_path):
     # Load the image
     goalkeeper_clothe_image = cv2.imread(image)
@@ -331,6 +333,7 @@ def run(image, histogram_save_path):
     
     # Save the histogram
     save_histogram(goalkeeper_hist_from_image, histogram_save_path)
+
 
 def main(opt):
     # check_requirements(exclude=('tensorboard', 'thop'))
